@@ -12,13 +12,15 @@ A standalone wireless bridge running on the **LilyGO LoRa32 T3_V1.6.1 433MHz** t
 ## Features
 
 - **433.92 MHz RF Reception**: Uses the onboard Semtech SX1278 transceiver in direct OOK demodulation mode via the [rtl_433_ESP](https://github.com/NorthernMan54/rtl_433_ESP) library.
+- **Signal Repeater (EMOS E0688 / Hideki)**: Automatically re-transmits the captured temperature (and humidity) for a second home weather station using the Hideki / Cresta protocol via direct OOK transmission on pin DIO2 (GPIO 32).
 - **Protocol Filtering**: Automatically isolates your **EMOS E3070** sensor (which transmits under the `Kedsum-TH` protocol family) and discards irrelevant neighbor stations (e.g. `Acurite-606TX`).
-- **OLED Display (SSD1306)**: Shows the assigned IP address, connection status, large temperature reading (`X.X °C`), channel ID, and a live counter indicating how many seconds ago the last packet arrived.
+- **OLED Display (SSD1306)**: Shows the assigned IP address, connection status, large temperature reading (`X.X °C`), reception age, and repeater transmit counter (`TX #N`).
 - **Minimalist HTTP Web Server**:
   - `GET /` (and default route): Returns **purely the temperature number** as plain text (e.g. `4.7\n`), matching the exact design specification for simple integrations and shell scripts.
-  - `GET /debug`: Live HTML diagnostic dashboard (auto-refreshing every 4s) displaying captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), RSSI, and raw JSON payloads.
+  - `GET /debug`: Live HTML diagnostic dashboard (auto-refreshing every 4s) displaying captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), repeater status, RSSI, and raw JSON payloads.
   - `GET /raw`: Clean plain text signal log suitable for `curl`.
-  - `GET /json`: Structured JSON response with temperature, sensor ID, channel, and battery status.
+  - `GET /json`: Structured JSON response with temperature, humidity, sensor ID, channel, and repeater metrics.
+  - `GET /repeat` (or `/tx`): On-demand HTTP trigger to immediately broadcast the latest reading to the second station.
 - **Static IP & DHCP Support**: Built-in toggle to specify a static IP address, gateway, subnet mask, and DNS, or use automatic DHCP from your router.
 - **NixOS Ready**: Ships with a declarative [shell.nix](file:///home/filip/git/lilygo-433temperature/shell.nix) providing PlatformIO and necessary tools out of the box.
 
@@ -61,6 +63,16 @@ IPAddress SECONDARY_DNS(8, 8, 8, 8);    // Secondary DNS
 const char* TARGET_MODEL  = "Kedsum-TH";
 const int   TARGET_ID     = -1; // -1 for any ID, or specify exact ID (e.g. 186)
 const int   TARGET_CHANNEL= -1; // -1 for any channel, or specify channel number
+```
+
+### 3. Repeater Settings (EMOS E0688 / Hideki)
+```cpp
+const bool          REPEATER_ENABLED    = true;   // Enable/disable repeating
+const byte          REPEATER_SENSOR_ID  = 0x0C;   // Sensor ID byte for Hideki protocol (0x00 - 0x1F)
+const byte          REPEATER_CHANNEL    = 1;      // Transmit channel (1, 2, or 3)
+const int8_t        REPEATER_TX_POWER   = 10;     // TX Power in dBm (10 dBm = 10 mW)
+const bool          REPEAT_ON_RECEIVE   = true;   // Auto-repeat immediately when new packet arrives
+const unsigned long REPEAT_INTERVAL_MS  = 30000;  // Periodic repeat in ms (30s; 0 to disable periodic)
 ```
 
 ---

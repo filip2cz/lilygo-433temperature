@@ -7,6 +7,9 @@
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
 #include <rtl_433_ESP.h>
+#include <RadioLib.h>
+
+extern SX1278 radio;
 
 // ==========================================
 // 1. Nastavení WiFi a IP adresy
@@ -25,7 +28,7 @@ IPAddress PRIMARY_DNS(192, 168, 1, 1);   // Primární DNS server (router nebo n
 IPAddress SECONDARY_DNS(8, 8, 8, 8);    // Sekundární DNS server (volitelné)
 
 // ==========================================
-// 2. Filtrování cílového čidla
+// 2. Filtrování cílového čidla (příjem)
 // Ignorujeme všechny cizí stanice a přijímáme pouze Kedsum-TH
 // ==========================================
 const char* TARGET_MODEL  = "Kedsum-TH";
@@ -33,7 +36,24 @@ const int   TARGET_ID     = -1; // -1 = jakékoliv ID (nebo 186 pro fixaci na je
 const int   TARGET_CHANNEL= -1; // -1 = jakýkoliv kanál (nebo 1 pro kanál 1)
 
 // ==========================================
-// 3. Nastavení OLED displeje (LilyGO T3_V1.6.1)
+// 3. Konfigurace opakovače signálu (Repeater) pro jinou meteostanici
+// Vysílání pro stanici EMOS E0688 podle protokolu Hideki / Cresta
+// ==========================================
+const bool          REPEATER_ENABLED    = false;   // Povolit/zakázat opakování signálu
+const byte          REPEATER_SENSOR_ID  = 0x0C;   // Náhodné ID čidla pro Hideki protokol (např. 0x0C)
+const byte          REPEATER_CHANNEL    = 1;      // Kanál vysílání (1..3)
+const int8_t        REPEATER_TX_POWER   = 10;     // Vysílací výkon v dBm (10 dBm = 10 mW)
+const bool          REPEAT_ON_RECEIVE   = true;   // Opakovat signál automaticky po přijetí z Kedsum-TH
+const unsigned long REPEAT_INTERVAL_MS  = 30000;  // Periodické opakování (např. 30s; 0 = pouze po příjmu)
+
+// Hardwarové piny pro opakovač / LED
+#define BOARD_LED 25
+#ifndef RF_MODULE_DIO2
+#  define RF_MODULE_DIO2 32
+#endif
+
+// ==========================================
+// 4. Nastavení OLED displeje (LilyGO T3_V1.6.1)
 // POZOR: Na čipu ESP32-PICO-D4 je GPIO 16 vyhrazen pro interní SPI Flash!
 // Reset OLEDu na této revizi desky není vyveden na GPIO (použijeme -1).
 // ==========================================
@@ -46,12 +66,12 @@ const int   TARGET_CHANNEL= -1; // -1 = jakýkoliv kanál (nebo 1 pro kanál 1)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET_PIN);
 
 // ==========================================
-// 4. Webový server na portu 80
+// 5. Webový server na portu 80
 // ==========================================
 WebServer server(80);
 
 // ==========================================
-// 5. 433 MHz přijímač (rtl_433_ESP / SX1278)
+// 6. 433 MHz přijímač (rtl_433_ESP / SX1278)
 // ==========================================
 #ifndef RF_MODULE_FREQUENCY
 #  define RF_MODULE_FREQUENCY 433.92
@@ -63,12 +83,19 @@ rtl_433_ESP rf;
 
 // Globální proměnné pro stav a teplotu
 float currentTemperature = NAN;
+int currentHumidity = -1;
 String lastModel = "";
 int lastId = -1;
 int lastChannel = -1;
 int lastBatteryOk = -1;
 unsigned long lastPacketTime = 0;
 unsigned long lastDisplayRefresh = 0;
+
+// Globální stav opakovače
+unsigned int txCount = 0;
+unsigned long lastTxTime = 0;
+volatile bool txPending = false;
+unsigned long txPendingTime = 0;
 
 // Stavová zpráva pro WiFi na displeji
 String wifiStatusMsg = "WiFi: Cekam...";
@@ -111,6 +138,171 @@ void addLogEntry(const String& raw, const String& model, int id, int channel, fl
 }
 
 // ==========================================
+// 7. Protokol Hideki / Cresta a vysílací funkce opakovače (EMOS E0688)
+// ==========================================
+byte encryptByte(byte b) {
+  byte a;
+  for (a = 0; b; b <<= 1) {
+    a ^= b;
+  }
+  return a;
+}
+
+byte secondCheck(byte b) {
+  byte c;
+  if (b & 0x80) {
+    b ^= 0x95;
+  }
+  c = b ^ (b >> 1);
+  if (b & 1) {
+    c ^= 0x5f;
+  }
+  if (c & 1) {
+    b ^= 0x5f;
+  }
+  return b ^ (c >> 1);
+}
+
+byte encryptAndAddCheck(byte *buffer) {
+  byte cs1, cs2, count, i;
+  count = (buffer[2] >> 1) & 0x1f;
+  cs1 = 0;
+  cs2 = 0;
+  for (i = 1; i < count + 1; i++) {
+    buffer[i] = encryptByte(buffer[i]);
+    cs1 ^= buffer[i];
+    cs2 = secondCheck(buffer[i] ^ cs2);
+  }
+  buffer[count + 1] = cs1;
+  buffer[count + 2] = secondCheck(cs1 ^ cs2);
+  return count + 3;
+}
+
+void sendManchesterByte(byte b) {
+  // Start bit: LOW potom HIGH (500us každý půlbit)
+  digitalWrite(RF_MODULE_DIO2, LOW);
+  delayMicroseconds(500);
+  digitalWrite(RF_MODULE_DIO2, HIGH);
+  delayMicroseconds(500);
+
+  // 16 půlbitů = 8 datových bitů (Manchester kódování)
+  for (byte i = 0; i < 16; i++) {
+    if (b & 1) {
+      digitalWrite(RF_MODULE_DIO2, HIGH);
+    } else {
+      digitalWrite(RF_MODULE_DIO2, LOW);
+    }
+    delayMicroseconds(500);
+
+    b = ~b;
+    if (i & 1) {
+      b >>= 1;
+    }
+  }
+}
+
+void sendManchesterPackage(byte *data, byte cnt) {
+  for (byte i = 0; i < cnt; i++) {
+    sendManchesterByte(data[i]);
+  }
+  digitalWrite(RF_MODULE_DIO2, LOW);
+}
+
+void sendHidekiPacket(int tempTenths, byte humidity) {
+  byte buffer[14];
+  byte raw[10];
+
+  raw[0] = 0x75; // Header
+  raw[1] = (REPEATER_CHANNEL << 5) | (REPEATER_SENSOR_ID & 0x1f); // Channel & ID
+  raw[2] = 0xce; // Velikost paketu pro thermo-hygro
+  raw[3] = 0x1e; // Typ senzoru thermo/hygro
+
+  int t = tempTenths;
+  if (t < 0) {
+    raw[5] = 0x4 << 4;
+    t = -t;
+  } else {
+    raw[5] = 0xc << 4;
+  }
+
+  raw[4] = (((t % 100) / 10) << 4) | (t % 10);
+  raw[5] |= (t / 100);
+  raw[6] = ((humidity / 10) << 4) | (humidity % 10);
+  raw[7] = 0xff; // Comfort / status flag
+
+  // Odvysílat paket 3x (s rotujícími sekvenčními bity)
+  for (int rep = 1; rep <= 3; rep++) {
+    byte seq = rep * 0x40;
+    memcpy(buffer, raw, ((raw[2] >> 1) & 0x1f) + 1);
+    buffer[3] = (buffer[3] & 0x1f) + seq;
+
+    byte count = encryptAndAddCheck(buffer);
+    sendManchesterPackage(buffer, count);
+
+    delay(30); // 30ms pauza mezi opakováními
+  }
+}
+
+bool repeatHidekiSignal(float tempC, int humPercent) {
+  if (!REPEATER_ENABLED) {
+    return false;
+  }
+  if (isnan(tempC)) {
+    Serial.println(F("[Repeater] Zruseno: Teplota neni k dispozici (NaN)."));
+    return false;
+  }
+
+  int tempTenths = (int)round(tempC * 10.0f);
+  byte hum = (humPercent >= 0 && humPercent <= 99) ? (byte)humPercent : 50;
+
+  txCount++;
+  lastTxTime = millis();
+
+  Serial.printf("[Repeater TX #%u] Vysilani pro EMOS E0688 (CH%d, ID:0x%02X): %.1f C, Vlhkost: %d%%\n",
+                txCount, REPEATER_CHANNEL, REPEATER_SENSOR_ID, tempC, hum);
+
+  digitalWrite(BOARD_LED, HIGH);
+
+  // 1. Pozastavit příjem a uzamknout SPI přístup k rádiu
+  rf.disableReceiver();
+  rtl_433_ESP::spiTake(portMAX_DELAY);
+
+  // 2. Přepnout SX1278 do přímého vysílacího režimu OOK
+  radio.setOutputPower(REPEATER_TX_POWER);
+  radio.setDataShapingOOK(0); // Čisté obdélníkové pulzy bez tvarování
+  int16_t state = radio.transmitDirect();
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("[Repeater CHYBA] transmitDirect() selhalo s kodem %d\n", state);
+  }
+
+  // 3. Nastavit pin DIO2 jako výstup pro modulaci
+  pinMode(RF_MODULE_DIO2, OUTPUT);
+  digitalWrite(RF_MODULE_DIO2, LOW);
+
+  // 4. Odvysílat Hideki paket
+  sendHidekiPacket(tempTenths, hum);
+
+  // 5. Vrátit pin DIO2 zpět do režimu vstupu
+  digitalWrite(RF_MODULE_DIO2, LOW);
+  pinMode(RF_MODULE_DIO2, INPUT);
+
+  // 6. Přepnout SX1278 zpět do přímého přijímacího režimu OOK
+  radio.setDataShapingOOK(2);
+  state = radio.receiveDirect();
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.printf("[Repeater CHYBA] receiveDirect() selhalo s kodem %d\n", state);
+  }
+
+  // 7. Uvolnit SPI a znovu povolit příjem
+  rtl_433_ESP::spiGive();
+  rf.enableReceiver();
+
+  digitalWrite(BOARD_LED, LOW);
+  Serial.println(F("[Repeater TX] Vysilani dokonceno, prijimac opet posloucha."));
+  return true;
+}
+
+// ==========================================
 // Vykreslení informací na OLED displej
 // ==========================================
 void updateDisplay() {
@@ -146,18 +338,24 @@ void updateDisplay() {
   // Oddělovací linka nad spodním řádkem
   display.drawLine(0, 48, SCREEN_WIDTH - 1, 48, SSD1306_WHITE);
 
-  // Spodní řádek: model čidla a čas od posledního příjmu
+  // Spodní řádek: model čidla a čas od posledního příjmu / stav opakovače
   display.setTextSize(1);
   display.setCursor(0, 52);
   if (lastPacketTime > 0) {
     unsigned long secAgo = (millis() - lastPacketTime) / 1000;
-    if (lastChannel >= 0) {
+    if (REPEATER_ENABLED) {
+      display.printf("RX:%lus|TX#%u(CH%d)", secAgo, txCount, REPEATER_CHANNEL);
+    } else if (lastChannel >= 0) {
       display.printf("Kedsum CH%d: %lus", lastChannel, secAgo);
     } else {
       display.printf("Kedsum: %lus", secAgo);
     }
   } else {
-    display.print("Cekam na Kedsum-TH");
+    if (REPEATER_ENABLED) {
+      display.printf("Cekam|TX:CH%d ID:0x%02X", REPEATER_CHANNEL, REPEATER_SENSOR_ID);
+    } else {
+      display.print("Cekam na Kedsum-TH");
+    }
   }
 
   display.display();
@@ -246,10 +444,36 @@ void handleDebug() {
   }
   html += "</div>";
 
+  // Banner opakovače signálu pro jinou meteostanici
+  html += "<div class='filter-info' style='border-left-color: #1f6feb;'>";
+  html += "<b>Opakovac signalu (EMOS E0688 / Hideki):</b> ";
+  if (REPEATER_ENABLED) {
+    html += "<span class='badge-ok'>AKTIVNI</span> | ";
+    html += "Kanal: <b>CH";
+    html += REPEATER_CHANNEL;
+    html += "</b> | ID: <b>0x";
+    if (REPEATER_SENSOR_ID < 0x10) html += "0";
+    html += String(REPEATER_SENSOR_ID, HEX);
+    html += "</b> | Odeslano: <b>#";
+    html += txCount;
+    html += "</b> | Posledni TX: <b>";
+    if (lastTxTime > 0) {
+      html += String((millis() - lastTxTime) / 1000);
+      html += "s zpet";
+    } else {
+      html += "Zatim neodeslano";
+    }
+    html += "</b> | <a href='/repeat' style='color:#58a6ff; font-weight:bold;'>[Otestovat vysilani nyni]</a>";
+  } else {
+    html += "<span class='badge-ign'>VYPNUT</span>";
+  }
+  html += "</div>";
+
   html += "<div class='nav'>";
   html += "Auto-refresh: 4s | ";
   html += "<a href='/raw'>Cisty text pro kopirovani (/raw)</a> | ";
   html += "<a href='/json'>JSON stav (/json)</a> | ";
+  html += "<a href='/repeat'>Zopakovat nyni (/repeat)</a> | ";
   html += "<a href='/'>Hlavni stranka (jen cislo)</a>";
   html += "</div>";
 
@@ -340,6 +564,7 @@ void handleJson() {
   JsonDocument doc;
   if (!isnan(currentTemperature)) {
     doc["temperature"] = currentTemperature;
+    if (currentHumidity >= 0) doc["humidity"] = currentHumidity;
     doc["model"] = lastModel;
     if (lastId >= 0) doc["id"] = lastId;
     if (lastChannel >= 0) doc["channel"] = lastChannel;
@@ -348,9 +573,39 @@ void handleJson() {
   } else {
     doc["temperature"] = nullptr;
   }
+
+  // Informace o opakovači
+  JsonObject rep = doc["repeater"].to<JsonObject>();
+  rep["enabled"] = REPEATER_ENABLED;
+  if (REPEATER_ENABLED) {
+    rep["target"] = "EMOS E0688 (Hideki)";
+    rep["channel"] = REPEATER_CHANNEL;
+    rep["sensor_id"] = REPEATER_SENSOR_ID;
+    rep["tx_count"] = txCount;
+    rep["last_tx_s_ago"] = (lastTxTime > 0) ? (int)((millis() - lastTxTime) / 1000) : -1;
+  }
+
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response + "\n");
+}
+
+// Manuální vyvolání zopakování signálu přes web (GET /repeat nebo GET /tx)
+void handleRepeat() {
+  if (isnan(currentTemperature)) {
+    server.send(400, "text/plain; charset=utf-8", "Chyba: Zatim nebyla prijata zadna teplota z Kedsum-TH k opakovani.\n");
+    return;
+  }
+  bool ok = repeatHidekiSignal(currentTemperature, currentHumidity);
+  if (ok) {
+    server.send(200, "text/plain; charset=utf-8",
+                "OK: Signal zopakovan pro EMOS E0688 (Hideki). Teplota: " + String(currentTemperature, 1) +
+                " C, Vlhkost: " + (currentHumidity >= 0 ? String(currentHumidity) + "%" : "50% (default)") +
+                ", TX #" + String(txCount) + "\n");
+    updateDisplay();
+  } else {
+    server.send(500, "text/plain; charset=utf-8", "Chyba: Opakovani signalu selhalo.\n");
+  }
 }
 
 // ==========================================
@@ -402,6 +657,9 @@ void rtl_433_Callback(char* message) {
   // Pokud je to Kedsum-TH a obsahuje teplotu, aktualizujeme stav
   if (!isnan(temp)) {
     currentTemperature = temp;
+    if (humidity >= 0) {
+      currentHumidity = humidity;
+    }
     lastPacketTime = millis();
     lastModel = model;
     lastId = id;
@@ -409,7 +667,14 @@ void rtl_433_Callback(char* message) {
     lastBatteryOk = battery;
 
     Serial.printf("=> [KEDSUM-TH AKTUALIZOVANO] Teplota: %.1f C (ID: %d, CH: %d, Vlhkost: %d%%)\n",
-                  currentTemperature, lastId, lastChannel, humidity);
+                  currentTemperature, lastId, lastChannel, currentHumidity);
+
+    // Naplánovat okamžité opakování pro EMOS E0688
+    if (REPEATER_ENABLED && REPEAT_ON_RECEIVE) {
+      txPending = true;
+      txPendingTime = millis();
+      Serial.println(F("[Repeater] Naplanovano opakovani signalu pro EMOS E0688 (za 250ms)..."));
+    }
 
     updateDisplay();
   }
@@ -422,8 +687,12 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println(F("\n=============================================="));
-  Serial.println(F(" LilyGO LoRa32 433MHz - EMOS E3070 Receiver "));
+  Serial.println(F(" LilyGO LoRa32 433MHz - Receiver & Repeater  "));
   Serial.println(F("=============================================="));
+
+  // 0. Konfigurace LED a výchozího pinu DIO2
+  pinMode(BOARD_LED, OUTPUT);
+  digitalWrite(BOARD_LED, LOW);
 
   // 1. Inicializace OLED displeje (SSD1306 na pinech SDA=21, SCL=22)
   Wire.begin(OLED_SDA, OLED_SCL);
@@ -465,10 +734,18 @@ void setup() {
   server.on("/signals", HTTP_GET, handleDebug);
   server.on("/raw", HTTP_GET, handleRaw);
   server.on("/json", handleJson);
+  server.on("/repeat", HTTP_GET, handleRepeat);
+  server.on("/tx", HTTP_GET, handleRepeat);
   server.onNotFound(handleRoot); // Výchozí fallback vrací číslo
   server.begin();
   Serial.println(F("[OK] Webovy server spusten na portu 80."));
   Serial.printf("[OK] Filtr nastaven POUZE na model '%s'\n", TARGET_MODEL);
+  if (REPEATER_ENABLED) {
+    Serial.printf("[OK] Opakovac signalu aktivni: Vysilani pro EMOS E0688 (Hideki, CH%d, ID:0x%02X, %d dBm)\n",
+                  REPEATER_CHANNEL, REPEATER_SENSOR_ID, REPEATER_TX_POWER);
+  } else {
+    Serial.println(F("[INFO] Opakovac signalu je v konfiguraci vypnut (REPEATER_ENABLED = false)."));
+  }
 
   // 4. Inicializace rtl_433_ESP přijímače na SX1278 (433.92 MHz)
   Log.begin(LOG_LEVEL_NOTICE, &Serial);
@@ -488,6 +765,23 @@ void setup() {
 void loop() {
   // Zpracování RF paketů (rtl_433)
   rf.loop();
+
+  // Zpracování odloženého opakování po příjmu z Kedsum-TH (prodleva 250ms pro klid v éteru)
+  if (txPending && (millis() - txPendingTime >= 250)) {
+    txPending = false;
+    repeatHidekiSignal(currentTemperature, currentHumidity);
+    updateDisplay();
+  }
+
+  // Periodické opakování signálu pro druhou meteostanici (např. každých 30s)
+  if (REPEATER_ENABLED && REPEAT_INTERVAL_MS > 0 && !isnan(currentTemperature)) {
+    if (lastTxTime == 0 || (millis() - lastTxTime >= REPEAT_INTERVAL_MS)) {
+      if (!txPending) {
+        repeatHidekiSignal(currentTemperature, currentHumidity);
+        updateDisplay();
+      }
+    }
+  }
 
   // Zpracování HTTP požadavků
   server.handleClient();
