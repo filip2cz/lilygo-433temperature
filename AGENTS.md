@@ -84,7 +84,8 @@ The web server runs on port 80:
 | `GET /temp` | GET | Identical to `/` in STA mode. | `text/plain` |
 | `GET /setup` | GET | Interactive WiFi & IP configuration and RF sensor filter interface. | `text/html` |
 | `POST /save` | POST | Form action to save WiFi & IP settings to NVS and reboot. | `text/html` |
-| `POST /save-filter` | POST | Form action to enable/disable Kedsum-TH sensor model filter (persists in NVS namespace `weather-flt`). | `text/html` |
+| `POST /save-filter` | POST | Form action to configure sensor model filter (persists in NVS namespace `weather-flt`). | `text/html` |
+| `GET /set-filter` | GET | Sets target model/ID/channel filter directly from query params (`?model=...&id=...&ch=...`), activates filter, and redirects to `/debug`. | `text/plain` (302) |
 | `GET /toggle-filter` | GET | Instant toggle of sensor model filter with redirect back to `/debug`. | `text/plain` (302) |
 | `POST /reset` | POST | Clears saved WiFi credentials and reboots into AP mode. | `text/html` |
 | `GET /debug` | GET | Real-time dark-mode HTML dashboard showing last 35 received packets, filter status with toggle, repeater metrics, and links. | `text/html` |
