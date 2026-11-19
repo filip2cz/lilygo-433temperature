@@ -143,6 +143,8 @@ This project was developed through an interactive vibecoding session using:
 
 Read the full transcript of questions, troubleshooting steps, and architectural decisions in [CONVERSATION.md](file:///home/filip/git/lilygo-433temperature/CONVERSATION.md).
 
+For AI agents contributing to this codebase, see the mandatory development guidelines and hardware documentation in [AGENTS.md](file:///home/filip/git/lilygo-433temperature/AGENTS.md).
+
 ---
 
 ## License
