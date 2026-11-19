@@ -77,12 +77,13 @@ const int   TARGET_ID      = -1; // -1 = any ID, or e.g. 186 to lock to one sens
 const int   TARGET_CHANNEL = -1; // -1 = any channel, or e.g. 1 to lock to channel 1
 
 // Runtime filter toggle – persisted in NVS namespace "weather-flt" key "enabled"
-bool filterEnabled = true;
+// Default: false (filter disabled by default)
+bool filterEnabled = false;
 
 void loadFilterConfig() {
   Preferences p;
   p.begin("weather-flt", true);
-  filterEnabled = p.getBool("enabled", true);
+  filterEnabled = p.getBool("enabled", false);
   p.end();
 }
 
@@ -90,6 +91,13 @@ void saveFilterConfig() {
   Preferences p;
   p.begin("weather-flt", false);
   p.putBool("enabled", filterEnabled);
+  p.end();
+}
+
+void clearFilterConfig() {
+  Preferences p;
+  p.begin("weather-flt", false);
+  p.clear();
   p.end();
 }
 
@@ -976,6 +984,7 @@ void handleToggleFilter() {
 // Handler pro vymazání paměti a reset do AP módu /reset
 void handleResetWifi() {
   clearWifiConfig();
+  clearFilterConfig();
   String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
   html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;text-align:center;padding:40px;}</style></head><body>";
   html += "<h2 style='color:#ffa657;'>Konfigurace vymazána!</h2>";
@@ -1059,8 +1068,8 @@ void rtl_433_Callback(char* message) {
     lastChannel = channel;
     lastBatteryOk = battery;
 
-    Serial.printf("=> [KEDSUM-TH AKTUALIZOVANO] Teplota: %.1f C (ID: %d, CH: %d, Vlhkost: %d%%)\n",
-                  currentTemperature, lastId, lastChannel, currentHumidity);
+    Serial.printf("=> [%s AKTUALIZOVANO] Teplota: %.1f C (ID: %d, CH: %d, Vlhkost: %d%%)\n",
+                  model.c_str(), currentTemperature, lastId, lastChannel, currentHumidity);
 
     // Naplánovat okamžité opakování pro EMOS E0688
     if (REPEATER_ENABLED && REPEAT_ON_RECEIVE) {
@@ -1145,7 +1154,11 @@ void setup() {
 
   server.begin();
   Serial.println(F("[OK] Webovy server spusten na portu 80."));
-  Serial.printf("[OK] Filtr nastaven POUZE na model '%s'\n", TARGET_MODEL);
+  if (filterEnabled) {
+    Serial.printf("[OK] Filtr nastaven POUZE na model '%s'\n", TARGET_MODEL);
+  } else {
+    Serial.println(F("[OK] Filtr modelu je ve vychozim stavu VYPNUT (akceptuji se vsechny modely s teplotou)."));
+  }
   if (REPEATER_ENABLED) {
     Serial.printf("[OK] Opakovac signalu aktivni: Vysilani pro EMOS E0688 (Hideki, CH%d, ID:0x%02X, %d dBm)\n",
                   REPEATER_CHANNEL, REPEATER_SENSOR_ID, REPEATER_TX_POWER);
