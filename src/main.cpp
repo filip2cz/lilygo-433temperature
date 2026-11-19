@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -12,20 +14,56 @@
 extern SX1278 radio;
 
 // ==========================================
-// 1. Nastavení WiFi a IP adresy
+// 1. Nastavení WiFi a perzistentní konfigurace (Preferences / NVS)
 // ==========================================
-const char* WIFI_SSID     = "SSID";
-const char* WIFI_PASSWORD = "PASSWORD";
+const char* PREF_NAMESPACE = "weather-wifi";
+const char* AP_SSID        = "LilyGO-Weather-Setup";
+const byte  DNS_PORT       = 53;
 
-// Nastavte USE_STATIC_IP na true pro statickou IP, nebo false pro DHCP:
-const bool USE_STATIC_IP  = false;
+struct WifiConfig {
+  String ssid = "";
+  String password = "";
+  bool useStaticIp = false;
+  String staticIp = "192.168.1.200";
+  String gateway = "192.168.1.1";
+  String subnet = "255.255.255.0";
+  String dns = "192.168.1.1";
+};
 
-// Parametry statické IP adresy (upravte podle své domácí sítě):
-IPAddress STATIC_IP(192, 168, 1, 206);   // Požadovaná statická IP adresa desky
-IPAddress GATEWAY(192, 168, 1, 1);       // Výchozí brána (IP adresa routeru)
-IPAddress SUBNET(255, 255, 255, 0);     // Maska podsítě
-IPAddress PRIMARY_DNS(192, 168, 1, 1);   // Primární DNS server (router nebo např. 8.8.8.8)
-IPAddress SECONDARY_DNS(8, 8, 8, 8);    // Sekundární DNS server (volitelné)
+WifiConfig wifiConfig;
+Preferences preferences;
+DNSServer dnsServer;
+bool isAPMode = false;
+
+void loadWifiConfig() {
+  preferences.begin(PREF_NAMESPACE, true);
+  wifiConfig.ssid = preferences.getString("ssid", "");
+  wifiConfig.password = preferences.getString("pass", "");
+  wifiConfig.useStaticIp = preferences.getBool("static_ip", false);
+  wifiConfig.staticIp = preferences.getString("ip", "192.168.1.200");
+  wifiConfig.gateway = preferences.getString("gw", "192.168.1.1");
+  wifiConfig.subnet = preferences.getString("mask", "255.255.255.0");
+  wifiConfig.dns = preferences.getString("dns", "192.168.1.1");
+  preferences.end();
+}
+
+void saveWifiConfig() {
+  preferences.begin(PREF_NAMESPACE, false);
+  preferences.putString("ssid", wifiConfig.ssid);
+  preferences.putString("pass", wifiConfig.password);
+  preferences.putBool("static_ip", wifiConfig.useStaticIp);
+  preferences.putString("ip", wifiConfig.staticIp);
+  preferences.putString("gw", wifiConfig.gateway);
+  preferences.putString("mask", wifiConfig.subnet);
+  preferences.putString("dns", wifiConfig.dns);
+  preferences.end();
+}
+
+void clearWifiConfig() {
+  preferences.begin(PREF_NAMESPACE, false);
+  preferences.clear();
+  preferences.end();
+}
 
 // ==========================================
 // 2. Filtrování cílového čidla (příjem)
@@ -311,7 +349,10 @@ void updateDisplay() {
   // Horní řádek: stav WiFi a IP adresa
   display.setTextSize(1);
   display.setCursor(0, 0);
-  if (WiFi.status() == WL_CONNECTED) {
+  if (isAPMode) {
+    display.print("AP: ");
+    display.print(WiFi.softAPIP());
+  } else if (WiFi.status() == WL_CONNECTED) {
     display.print("IP: ");
     display.print(WiFi.localIP());
   } else {
@@ -338,10 +379,12 @@ void updateDisplay() {
   // Oddělovací linka nad spodním řádkem
   display.drawLine(0, 48, SCREEN_WIDTH - 1, 48, SSD1306_WHITE);
 
-  // Spodní řádek: model čidla a čas od posledního příjmu / stav opakovače
+  // Spodní řádek: model čidla a čas od posledního příjmu / stav opakovače / AP info
   display.setTextSize(1);
   display.setCursor(0, 52);
-  if (lastPacketTime > 0) {
+  if (isAPMode) {
+    display.print("SSID: LilyGO-Setup");
+  } else if (lastPacketTime > 0) {
     unsigned long secAgo = (millis() - lastPacketTime) / 1000;
     if (REPEATER_ENABLED) {
       display.printf("RX:%lus|TX#%u(CH%d)", secAgo, txCount, REPEATER_CHANNEL);
@@ -362,9 +405,90 @@ void updateDisplay() {
 }
 
 // ==========================================
+// WiFi Správa spojení a režimů (AP / STA)
+// ==========================================
+void startAPMode() {
+  isAPMode = true;
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(AP_SSID);
+
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMsk(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apIP, netMsk);
+
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  wifiStatusMsg = "AP: " + String(AP_SSID);
+  Serial.println(F("\n=============================================="));
+  Serial.println(F("[WiFi AP] SPUSTEN REZIM NASTAVENI (Access Point)"));
+  Serial.printf("[WiFi AP] SSID: %s\n", AP_SSID);
+  Serial.print(F("[WiFi AP] IP: ")); Serial.println(WiFi.softAPIP());
+  Serial.println(F("[WiFi AP] Otevřete v prohlížeči: http://192.168.4.1"));
+  Serial.println(F("==============================================\n"));
+  updateDisplay();
+}
+
+bool connectToWiFi() {
+  if (wifiConfig.ssid.length() == 0) {
+    Serial.println(F("[WiFi] Zadne ulozene SSID v pameti."));
+    return false;
+  }
+
+  isAPMode = false;
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+
+  if (wifiConfig.useStaticIp) {
+    IPAddress ip, gw, mask, dns;
+    if (ip.fromString(wifiConfig.staticIp) && gw.fromString(wifiConfig.gateway) &&
+        mask.fromString(wifiConfig.subnet) && dns.fromString(wifiConfig.dns)) {
+      if (!WiFi.config(ip, gw, mask, dns)) {
+        Serial.println(F("[WiFi CHYBA] Konfigurace staticke IP selhala!"));
+      } else {
+        Serial.printf("[WiFi] Staticka IP: %s (GW: %s, MASK: %s, DNS: %s)\n",
+                      wifiConfig.staticIp.c_str(), wifiConfig.gateway.c_str(),
+                      wifiConfig.subnet.c_str(), wifiConfig.dns.c_str());
+      }
+    } else {
+      Serial.println(F("[WiFi VAROVANI] Neplatna staticka IP, pouzivam DHCP!"));
+    }
+  }
+
+  Serial.printf("[WiFi] Pripojuji k: '%s'...\n", wifiConfig.ssid.c_str());
+  wifiStatusMsg = "WiFi: Pripojuji...";
+  updateDisplay();
+
+  WiFi.begin(wifiConfig.ssid.c_str(), wifiConfig.password.c_str());
+
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
+    delay(400);
+    Serial.print(F("."));
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(F("[WiFi] USPESNE PRIPOJENO! IP: "));
+    Serial.println(WiFi.localIP());
+    wifiStatusMsg = "IP: " + WiFi.localIP().toString();
+    updateDisplay();
+    return true;
+  } else {
+    Serial.printf("[WiFi CHYBA] Pripojeni k siti '%s' selhalo (timeout 20s)!\n", wifiConfig.ssid.c_str());
+    return false;
+  }
+}
+
+// ==========================================
 // WiFi Event Handler pro diagnostiku
 // ==========================================
 void WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (isAPMode) return;
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_START:
       Serial.println(F("[WiFi] Rozhrani spusteno..."));
@@ -394,12 +518,22 @@ void WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 // ==========================================
 // Web server handlery
 // ==========================================
+void handleSetupPage();
+
 // Hlavní stránka: ČISTĚ JEN TEPLOTA (pouze číslo z čidla Kedsum-TH)
 void handleRoot() {
   if (isnan(currentTemperature)) {
     server.send(503, "text/plain", "NaN\n");
   } else {
     server.send(200, "text/plain", String(currentTemperature, 1) + "\n");
+  }
+}
+
+void handleRootOrSetup() {
+  if (isAPMode) {
+    handleSetupPage();
+  } else {
+    handleRoot();
   }
 }
 
@@ -433,15 +567,14 @@ void handleDebug() {
   html += TARGET_MODEL;
   html += "</code> | Ostatni modely (Acurite atd.) jsou ignorovany.<br>";
   html += "<b>IP konfigurace:</b> ";
-  if (USE_STATIC_IP) {
-    html += "Staticka IP (";
-    html += WiFi.localIP().toString();
-    html += ")";
+  if (isAPMode) {
+    html += "Rezim AP (Setup) - IP: " + WiFi.softAPIP().toString();
+  } else if (wifiConfig.useStaticIp) {
+    html += "Staticka IP (" + WiFi.localIP().toString() + ")";
   } else {
-    html += "DHCP (";
-    html += WiFi.localIP().toString();
-    html += ")";
+    html += "DHCP (" + WiFi.localIP().toString() + ")";
   }
+  html += " | <a href='/setup' style='color:#58a6ff;'>[Nastaveni WiFi / IP (/setup)]</a>";
   html += "</div>";
 
   // Banner opakovače signálu pro jinou meteostanici
@@ -474,6 +607,7 @@ void handleDebug() {
   html += "<a href='/raw'>Cisty text pro kopirovani (/raw)</a> | ";
   html += "<a href='/json'>JSON stav (/json)</a> | ";
   html += "<a href='/repeat'>Zopakovat nyni (/repeat)</a> | ";
+  html += "<a href='/setup'>Nastaveni WiFi (/setup)</a> | ";
   html += "<a href='/'>Hlavni stranka (jen cislo)</a>";
   html += "</div>";
 
@@ -574,6 +708,13 @@ void handleJson() {
     doc["temperature"] = nullptr;
   }
 
+  // Informace o WiFi
+  JsonObject wf = doc["wifi"].to<JsonObject>();
+  wf["is_ap_mode"] = isAPMode;
+  wf["ssid"] = isAPMode ? AP_SSID : wifiConfig.ssid;
+  wf["ip"] = isAPMode ? WiFi.softAPIP().toString() : (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "");
+  wf["static_ip"] = wifiConfig.useStaticIp;
+
   // Informace o opakovači
   JsonObject rep = doc["repeater"].to<JsonObject>();
   rep["enabled"] = REPEATER_ENABLED;
@@ -606,6 +747,158 @@ void handleRepeat() {
   } else {
     server.send(500, "text/plain; charset=utf-8", "Chyba: Opakovani signalu selhalo.\n");
   }
+}
+
+// Stránka pro nastavení WiFi a IP adresy / DHCP
+void handleSetupPage() {
+  String html = "";
+  html.reserve(4096);
+  html += "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>LilyGO - Nastavení WiFi a IP</title>";
+  html += "<style>";
+  html += "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 500px; margin: 0 auto; }";
+  html += "h1 { color: #58a6ff; font-size: 20px; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-top: 0; }";
+  html += ".card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }";
+  html += "label { display: block; font-weight: bold; margin-top: 14px; margin-bottom: 5px; font-size: 13px; color: #7ee787; }";
+  html += "input[type='text'], input[type='password'], select { width: 100%; box-sizing: border-box; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 10px; border-radius: 6px; font-size: 14px; }";
+  html += "input[type='checkbox'] { transform: scale(1.2); margin-right: 8px; }";
+  html += ".checkbox-label { display: flex; align-items: center; cursor: pointer; color: #ffa657; margin-top: 15px; }";
+  html += ".btn { background: #238636; color: white; border: none; border-radius: 6px; padding: 12px 20px; font-size: 15px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 20px; }";
+  html += ".btn:hover { background: #2ea043; }";
+  html += ".btn-danger { background: #da3633; margin-top: 10px; }";
+  html += ".btn-danger:hover { background: #b62324; }";
+  html += ".note { font-size: 12px; color: #8b949e; margin-top: 5px; line-height: 1.4; }";
+  html += ".nav { margin-top: 15px; font-size: 13px; text-align: center; }";
+  html += ".nav a { color: #58a6ff; text-decoration: none; margin: 0 10px; }";
+  html += "</style>";
+  html += "<script>";
+  html += "function toggleStatic() {";
+  html += "  var chk = document.getElementById('static_chk').checked;";
+  html += "  document.getElementById('static_fields').style.display = chk ? 'block' : 'none';";
+  html += "}";
+  html += "function fillSsid(val) {";
+  html += "  if (val) document.getElementById('ssid_input').value = val;";
+  html += "}";
+  html += "</script></head><body>";
+
+  html += "<h1>LilyGO 433MHz - Nastavení WiFi</h1>";
+
+  html += "<form method='POST' action='/save'>";
+  html += "<div class='card'>";
+
+  // Vyhledané sítě (pokud existují)
+  int n = WiFi.scanComplete();
+  if (n > 0) {
+    html += "<label>Dostupné WiFi sítě v okolí:</label>";
+    html += "<select onchange='fillSsid(this.value)'>";
+    html += "<option value=''>-- Vyberte síť nebo zadejte níže --</option>";
+    for (int i = 0; i < n; ++i) {
+      html += "<option value='" + WiFi.SSID(i) + "'>" + WiFi.SSID(i) + " (" + String(WiFi.RSSI(i)) + " dBm)" + "</option>";
+    }
+    html += "</select>";
+  }
+
+  html += "<label>Název WiFi sítě (SSID):</label>";
+  html += "<input type='text' id='ssid_input' name='ssid' value='" + wifiConfig.ssid + "' required placeholder='Vaše WiFi síť'>";
+
+  html += "<label>Heslo k WiFi:</label>";
+  html += "<input type='password' name='pass' value='" + wifiConfig.password + "' placeholder='Heslo k WiFi (ponechte prázdné pro otevřenou síť)'>";
+
+  html += "<label class='checkbox-label'>";
+  html += "<input type='checkbox' id='static_chk' name='static_ip' value='1' onchange='toggleStatic()'" + String(wifiConfig.useStaticIp ? " checked" : "") + ">";
+  html += "Použít statickou IP adresu (jinak DHCP)";
+  html += "</label>";
+
+  html += "<div id='static_fields' style='display: " + String(wifiConfig.useStaticIp ? "block" : "none") + ";'>";
+  html += "<label>Statická IP adresa:</label>";
+  html += "<input type='text' name='ip' value='" + wifiConfig.staticIp + "' placeholder='192.168.1.200'>";
+  html += "<label>Výchozí brána (Gateway / Router):</label>";
+  html += "<input type='text' name='gw' value='" + wifiConfig.gateway + "' placeholder='192.168.1.1'>";
+  html += "<label>Maska podsítě:</label>";
+  html += "<input type='text' name='mask' value='" + wifiConfig.subnet + "' placeholder='255.255.255.0'>";
+  html += "<label>DNS server:</label>";
+  html += "<input type='text' name='dns' value='" + wifiConfig.dns + "' placeholder='192.168.1.1'>";
+  html += "</div>";
+
+  html += "<button type='submit' class='btn'>Uložit a restartovat zařízení</button>";
+  html += "</div>";
+  html += "</form>";
+
+  html += "<div class='card'>";
+  html += "<form method='POST' action='/reset' onsubmit='return confirm(\"Opravdu chcete vymazat WiFi nastavení a přepnout do AP módu?\");'>";
+  html += "<p class='note'>Pokud chcete zařízení znovu uvést do výchozího stavu (vlastní přístupový bod):</p>";
+  html += "<button type='submit' class='btn btn-danger'>Vymazat konfiguraci a spustit AP</button>";
+  html += "</form>";
+  html += "</div>";
+
+  html += "<div class='nav'>";
+  html += "<a href='/'>Hlavní stránka</a> | ";
+  html += "<a href='/debug'>Debug monitoring</a>";
+  html += "</div>";
+
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
+
+  // Spustit asynchronní sken pro příští načtení stránky
+  WiFi.scanNetworks(true);
+}
+
+// Handler pro uložení formuláře /save
+void handleSaveWifi() {
+  if (server.hasArg("ssid")) {
+    wifiConfig.ssid = server.arg("ssid");
+  }
+  if (server.hasArg("pass")) {
+    wifiConfig.password = server.arg("pass");
+  }
+  wifiConfig.useStaticIp = server.hasArg("static_ip");
+  if (server.hasArg("ip") && server.arg("ip").length() > 0) {
+    wifiConfig.staticIp = server.arg("ip");
+  }
+  if (server.hasArg("gw") && server.arg("gw").length() > 0) {
+    wifiConfig.gateway = server.arg("gw");
+  }
+  if (server.hasArg("mask") && server.arg("mask").length() > 0) {
+    wifiConfig.subnet = server.arg("mask");
+  }
+  if (server.hasArg("dns") && server.arg("dns").length() > 0) {
+    wifiConfig.dns = server.arg("dns");
+  }
+
+  saveWifiConfig();
+
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Nastavení uloženo</title>";
+  html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;text-align:center;padding:40px;}</style></head><body>";
+  html += "<h2 style='color:#7ee787;'>Konfigurace byla úspěšně uložena do paměti!</h2>";
+  html += "<p>LilyGO se nyní restartuje a pokusí se připojit k síti: <b>" + wifiConfig.ssid + "</b></p>";
+  if (wifiConfig.useStaticIp) {
+    html += "<p>Nastavena statická IP: <b>" + wifiConfig.staticIp + "</b></p>";
+  } else {
+    html += "<p>Bude použito automatické přidělení IP adresy přes DHCP.</p>";
+  }
+  html += "<p style='color:#8b949e;'>Připojte se zpět k vaší domácí síti. Nová IP adresa se zobrazí také na displeji desky.</p>";
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
+
+  delay(1500);
+  ESP.restart();
+}
+
+// Handler pro vymazání paměti a reset do AP módu /reset
+void handleResetWifi() {
+  clearWifiConfig();
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;text-align:center;padding:40px;}</style></head><body>";
+  html += "<h2 style='color:#ffa657;'>Konfigurace vymazána!</h2>";
+  html += "<p>Restartuji do výchozího režimu Access Point...</p>";
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
+
+  delay(1500);
+  ESP.restart();
 }
 
 // ==========================================
@@ -704,31 +997,23 @@ void setup() {
     updateDisplay();
   }
 
-  // 2. Kontrola a připojení k WiFi
+  // 2. Načtení WiFi konfigurace z paměti NVS (Preferences)
+  loadWifiConfig();
   WiFi.onEvent(WiFiEvent);
-  Serial.printf("[WiFi] Zahajuji pripojovani k: '%s'...\n", WIFI_SSID);
-  wifiStatusMsg = "WiFi: Pripojuji...";
-  updateDisplay();
 
-  WiFi.disconnect(true);
-  delay(100);
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-
-  // Konfigurace statické IP adresy, pokud je zapnuta
-  if (USE_STATIC_IP) {
-    if (!WiFi.config(STATIC_IP, GATEWAY, SUBNET, PRIMARY_DNS, SECONDARY_DNS)) {
-      Serial.println(F("[WiFi CHYBA] Konfigurace staticke IP selhala!"));
-    } else {
-      Serial.print(F("[WiFi] Nastavena staticka IP: "));
-      Serial.println(STATIC_IP);
+  if (wifiConfig.ssid.length() == 0) {
+    Serial.println(F("[WiFi] Zadna ulozena WiFi sit v pameti. Spoustim AP server pro nastaveni..."));
+    startAPMode();
+  } else {
+    bool connected = connectToWiFi();
+    if (!connected) {
+      Serial.println(F("[WiFi] Pripojeni k ulozene siti selhalo. Spoustim docasny AP server pro zmenu nastaveni..."));
+      startAPMode();
     }
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
   // 3. Nastavení webového serveru
-  server.on("/", HTTP_GET, handleRoot);
+  server.on("/", HTTP_GET, handleRootOrSetup);
   server.on("/temp", HTTP_GET, handleRoot);
   server.on("/debug", HTTP_GET, handleDebug);
   server.on("/signals", HTTP_GET, handleDebug);
@@ -736,7 +1021,24 @@ void setup() {
   server.on("/json", handleJson);
   server.on("/repeat", HTTP_GET, handleRepeat);
   server.on("/tx", HTTP_GET, handleRepeat);
-  server.onNotFound(handleRoot); // Výchozí fallback vrací číslo
+  server.on("/setup", HTTP_GET, handleSetupPage);
+  server.on("/save", HTTP_POST, handleSaveWifi);
+  server.on("/reset", HTTP_POST, handleResetWifi);
+
+  // Captive Portal pro mobilní zařízení v AP režimu
+  server.on("/generate_204", HTTP_GET, handleSetupPage); // Android
+  server.on("/hotspot-detect.html", HTTP_GET, handleSetupPage); // iOS/macOS
+  server.on("/ncsi.txt", HTTP_GET, handleSetupPage); // Windows
+
+  server.onNotFound([]() {
+    if (isAPMode) {
+      server.sendHeader("Location", "http://192.168.4.1/setup", true);
+      server.send(302, "text/plain", "");
+    } else {
+      handleRoot();
+    }
+  });
+
   server.begin();
   Serial.println(F("[OK] Webovy server spusten na portu 80."));
   Serial.printf("[OK] Filtr nastaven POUZE na model '%s'\n", TARGET_MODEL);
@@ -763,6 +1065,11 @@ void setup() {
 // Loop
 // ==========================================
 void loop() {
+  // Zpracování DNS požadavků v AP módu (Captive Portal)
+  if (isAPMode) {
+    dnsServer.processNextRequest();
+  }
+
   // Zpracování RF paketů (rtl_433)
   rf.loop();
 
@@ -786,9 +1093,9 @@ void loop() {
   // Zpracování HTTP požadavků
   server.handleClient();
 
-  // Automatický reconnect WiFi při výpadku
+  // Automatický reconnect WiFi při výpadku (pouze pokud nejsme v AP módu)
   static unsigned long lastWifiReconnectAttempt = 0;
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!isAPMode && WiFi.status() != WL_CONNECTED) {
     if (millis() - lastWifiReconnectAttempt > 15000) {
       lastWifiReconnectAttempt = millis();
       Serial.println(F("[WiFi] Obnovuji pokus o pripojeni..."));

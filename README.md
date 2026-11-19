@@ -14,14 +14,16 @@ A standalone wireless bridge running on the **LilyGO LoRa32 T3_V1.6.1 433MHz** t
 - **433.92 MHz RF Reception**: Uses the onboard Semtech SX1278 transceiver in direct OOK demodulation mode via the [rtl_433_ESP](https://github.com/NorthernMan54/rtl_433_ESP) library.
 - **Signal Repeater (EMOS E0688 / Hideki)**: Automatically re-transmits the captured temperature (and humidity) for a second home weather station using the Hideki / Cresta protocol via direct OOK transmission on pin DIO2 (GPIO 32).
 - **Protocol Filtering**: Automatically isolates your **EMOS E3070** sensor (which transmits under the `Kedsum-TH` protocol family) and discards irrelevant neighbor stations (e.g. `Acurite-606TX`).
-- **OLED Display (SSD1306)**: Shows the assigned IP address, connection status, large temperature reading (`X.X °C`), reception age, and repeater transmit counter (`TX #N`).
+- **OLED Display (SSD1306)**: Shows the assigned IP address (or AP mode status), connection status, large temperature reading (`X.X °C`), reception age, and repeater transmit counter (`TX #N`).
 - **Minimalist HTTP Web Server**:
-  - `GET /` (and default route): Returns **purely the temperature number** as plain text (e.g. `4.7\n`), matching the exact design specification for simple integrations and shell scripts.
-  - `GET /debug`: Live HTML diagnostic dashboard (auto-refreshing every 4s) displaying captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), repeater status, RSSI, and raw JSON payloads.
+  - `GET /` (and default route): In regular WiFi STA mode returns **purely the temperature number** as plain text (e.g. `4.7\n`). In AP setup mode it automatically displays the WiFi configuration page.
+  - `GET /setup`: Interactive web interface to configure WiFi credentials (SSID scan & select, password) and IP address mode (DHCP vs. static IP with IP, Gateway, Subnet mask, and DNS).
+  - `GET /debug`: Live HTML diagnostic dashboard (auto-refreshing every 4s) displaying captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), WiFi status link, repeater status, RSSI, and raw JSON payloads.
   - `GET /raw`: Clean plain text signal log suitable for `curl`.
-  - `GET /json`: Structured JSON response with temperature, humidity, sensor ID, channel, and repeater metrics.
+  - `GET /json`: Structured JSON response with temperature, humidity, sensor ID, channel, WiFi details, and repeater metrics.
   - `GET /repeat` (or `/tx`): On-demand HTTP trigger to immediately broadcast the latest reading to the second station.
-- **Static IP & DHCP Support**: Built-in toggle to specify a static IP address, gateway, subnet mask, and DNS, or use automatic DHCP from your router.
+- **WiFi Captive Portal & Persistent NVS Storage**: If no WiFi credentials are stored in non-volatile storage (NVS via `Preferences`), the board automatically starts its own WiFi Access Point (`LilyGO-Weather-Setup` on `192.168.4.1`) with a captive portal redirecting any browser directly to `/setup`.
+- **Static IP & DHCP Support**: Fully configurable through the web interface with persistence across reboots.
 - **NixOS Ready**: Ships with a declarative [shell.nix](file:///home/filip/git/lilygo-433temperature/shell.nix) providing PlatformIO and necessary tools out of the box.
 
 ---
@@ -40,22 +42,14 @@ A standalone wireless bridge running on the **LilyGO LoRa32 T3_V1.6.1 433MHz** t
 
 ## Configuration
 
-In [src/main.cpp](file:///home/filip/git/lilygo-433temperature/src/main.cpp) (or [lilygo-433temperature.ino](file:///home/filip/git/lilygo-433temperature/lilygo-433temperature.ino)):
-
-### 1. WiFi & IP Settings
-```cpp
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-
-// Set to true for static IP, or false for DHCP:
-const bool USE_STATIC_IP  = true;
-
-IPAddress STATIC_IP(192, 168, 1, 200);   // Target static IP
-IPAddress GATEWAY(192, 168, 1, 1);       // Router gateway
-IPAddress SUBNET(255, 255, 255, 0);     // Subnet mask
-IPAddress PRIMARY_DNS(192, 168, 1, 1);   // Primary DNS
-IPAddress SECONDARY_DNS(8, 8, 8, 8);    // Secondary DNS
-```
+### 1. WiFi & IP Settings (Web Setup / AP Mode)
+Upon initial power-on (or if saved WiFi cannot be reached):
+1. The board automatically starts an open WiFi hotspot named **`LilyGO-Weather-Setup`**.
+2. Connect your phone or computer to this WiFi network.
+3. Open `http://192.168.4.1/` (or `http://192.168.4.1/setup`) in your web browser (Captive portal triggers automatically on Android/iOS/Windows).
+4. Select your home WiFi from the scan list (or type the SSID), enter your password, choose DHCP or Static IP, and click **Uložit a restartovat zařízení**.
+5. All settings are persistently saved to ESP32 NVS memory via `Preferences` and automatically re-used on all subsequent reboots.
+6. To reconfigure later, simply visit `http://<BOARD_IP>/setup` or use the reset button to return to AP mode.
 
 ### 2. Sensor Filter
 ```cpp
