@@ -88,6 +88,7 @@ Upon entering, you have access to short helper commands:
 - **`upload`** — Uploads firmware to the connected board (`pio run -t upload`)
 - **`monitor`** — Opens serial monitor at 115200 baud (`pio device monitor`)
 - **`flash`** — One-shot command: builds, uploads, and immediately opens the monitor!
+- **`runtests`** — Runs the complete automated test suite (`python3 tests/run_tests.py`)!
 
 ### 2. Single-line Commands from Terminal
 You can also run any command directly from your system terminal without entering the interactive shell:
@@ -95,6 +96,22 @@ You can also run any command directly from your system terminal without entering
 nix-shell --run upload
 nix-shell --run monitor
 nix-shell --run flash
+nix-shell --run runtests
+```
+
+### 3. Automated Test Suite (`tests/`)
+The repository includes automated unit and integration tests under the [`tests/`](file:///home/filip/git/lilygo-433temperature/tests) directory:
+- **`tests/test_filter_logic.py`**: Unit tests for sensor matching (model, ID, channel, wildcard handling).
+- **`tests/test_hideki_repeater.py`**: Unit tests for Hideki / Cresta protocol encoding and checksums.
+- **`tests/test_rtl433_parser.py`**: Unit tests for rtl_433 JSON message decoding and log ring buffer.
+- **`tests/test_device_api.py`**: Live hardware integration tests verifying all HTTP endpoints (`/`, `/json`, `/raw`, `/debug`, `/filter`, `/setup`, `/save-filter`, `/set-filter`, `/toggle-filter`).
+- **`tests/run_tests.py`**: Unified test discovery and execution runner.
+
+Run all tests:
+```bash
+nix-shell --run runtests
+# or directly:
+python3 tests/run_tests.py
 ```
 
 ### 3. Non-NixOS Systems

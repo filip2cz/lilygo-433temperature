@@ -107,6 +107,14 @@ The repository includes a declarative [shell.nix](file:///home/filip/git/lilygo-
   - `upload` — Flashes binary to connected board (`pio run -t upload`).
   - `monitor` — Opens serial monitor at 115200 baud (`pio device monitor`).
   - `flash` — Builds, uploads, and immediately opens the monitor (`pio run -t upload && exec pio device monitor`).
+  - `runtests` — Executes the complete automated test suite (`python3 tests/run_tests.py`).
+
+### Automated Test Suite (`tests/`):
+- `tests/test_filter_logic.py`: Unit tests for matching algorithm (wildcards, case-insensitivity, enabled/disabled state).
+- `tests/test_hideki_repeater.py`: Bitwise tests for Hideki / Cresta protocol encoding, packet byte layout, and checksum calculations.
+- `tests/test_rtl433_parser.py`: JSON packet parsing for various sensor models and ring log buffer capping.
+- `tests/test_device_api.py`: Hardware integration tests exercising live HTTP endpoints against `BOARD_URL` (default `http://192.168.1.50`).
+- `tests/run_tests.py`: Python unittest discovery runner.
 
 ### PlatformIO Configuration (`platformio.ini`):
 - **Board**: `ttgo-lora32-v21`
