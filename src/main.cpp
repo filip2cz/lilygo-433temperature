@@ -66,12 +66,32 @@ void clearWifiConfig() {
 }
 
 // ==========================================
-// 2. Filtrování cílového čidla (příjem)
-// Ignorujeme všechny cizí stanice a přijímáme pouze Kedsum-TH
+// 2. Signal filter configuration (reception)
+// TARGET_MODEL/ID/CHANNEL are compile-time constants defining which sensor to accept.
+// filterEnabled is a runtime flag: when true, only packets matching TARGET_MODEL are
+// accepted and update the temperature; when false, the first packet with any temperature
+// (regardless of model) is accepted. Stored in NVS via Preferences.
 // ==========================================
-const char* TARGET_MODEL  = "Kedsum-TH";
-const int   TARGET_ID     = -1; // -1 = jakékoliv ID (nebo 186 pro fixaci na jedno čidlo)
-const int   TARGET_CHANNEL= -1; // -1 = jakýkoliv kanál (nebo 1 pro kanál 1)
+const char* TARGET_MODEL   = "Kedsum-TH";
+const int   TARGET_ID      = -1; // -1 = any ID, or e.g. 186 to lock to one sensor
+const int   TARGET_CHANNEL = -1; // -1 = any channel, or e.g. 1 to lock to channel 1
+
+// Runtime filter toggle – persisted in NVS namespace "weather-flt" key "enabled"
+bool filterEnabled = true;
+
+void loadFilterConfig() {
+  Preferences p;
+  p.begin("weather-flt", true);
+  filterEnabled = p.getBool("enabled", true);
+  p.end();
+}
+
+void saveFilterConfig() {
+  Preferences p;
+  p.begin("weather-flt", false);
+  p.putBool("enabled", filterEnabled);
+  p.end();
+}
 
 // ==========================================
 // 3. Konfigurace opakovače signálu (Repeater) pro jinou meteostanici
@@ -389,15 +409,23 @@ void updateDisplay() {
     if (REPEATER_ENABLED) {
       display.printf("RX:%lus|TX#%u(CH%d)", secAgo, txCount, REPEATER_CHANNEL);
     } else if (lastChannel >= 0) {
-      display.printf("Kedsum CH%d: %lus", lastChannel, secAgo);
+      if (filterEnabled) {
+        display.printf("Kedsum CH%d: %lus", lastChannel, secAgo);
+      } else {
+        display.printf("%s CH%d:%lus", lastModel.substring(0, 6).c_str(), lastChannel, secAgo);
+      }
     } else {
-      display.printf("Kedsum: %lus", secAgo);
+      if (filterEnabled) {
+        display.printf("Kedsum: %lus", secAgo);
+      } else {
+        display.printf("%s: %lus", lastModel.substring(0, 8).c_str(), secAgo);
+      }
     }
   } else {
     if (REPEATER_ENABLED) {
       display.printf("Cekam|TX:CH%d ID:0x%02X", REPEATER_CHANNEL, REPEATER_SENSOR_ID);
     } else {
-      display.print("Cekam na Kedsum-TH");
+      display.print(filterEnabled ? "Cekam na Kedsum-TH" : "Cekam na signal 433");
     }
   }
 
@@ -563,9 +591,14 @@ void handleDebug() {
 
   html += "<h1>433 MHz Monitor - Zachycene signaly</h1>";
   html += "<div class='filter-info'>";
-  html += "<b>Aktivni filtr:</b> Zpracovava se POUZE model: <code>";
-  html += TARGET_MODEL;
-  html += "</code> | Ostatni modely (Acurite atd.) jsou ignorovany.<br>";
+  html += "<b>Filtr modelu (Kedsum-TH):</b> ";
+  if (filterEnabled) {
+    html += "<span class='badge-ok'>ZAPNUT</span> | Zpracovava se POUZE model: <code>";
+    html += TARGET_MODEL;
+    html += "</code> (ostatni modely jsou ignorovany). <a href='/toggle-filter' style='color:#58a6ff; font-weight:bold;'>[Prepnout / Vypnout filtr]</a><br>";
+  } else {
+    html += "<span class='badge-ign' style='background:#b08800; color:white; font-weight:bold;'>VYPNUT</span> | Prijimaji se VSECHNY zachycene modely s teplotou. <a href='/toggle-filter' style='color:#58a6ff; font-weight:bold;'>[Prepnout / Zapnout filtr (pouze Kedsum-TH)]</a><br>";
+  }
   html += "<b>IP konfigurace:</b> ";
   if (isAPMode) {
     html += "Rezim AP (Setup) - IP: " + WiFi.softAPIP().toString();
@@ -726,6 +759,11 @@ void handleJson() {
     rep["last_tx_s_ago"] = (lastTxTime > 0) ? (int)((millis() - lastTxTime) / 1000) : -1;
   }
 
+  // Informace o filtru
+  JsonObject flt = doc["filter"].to<JsonObject>();
+  flt["enabled"] = filterEnabled;
+  flt["target_model"] = TARGET_MODEL;
+
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response + "\n");
@@ -826,6 +864,22 @@ void handleSetupPage() {
   html += "</form>";
 
   html += "<div class='card'>";
+  html += "<h2 style='font-size:16px; margin-top:0; color:#58a6ff;'>Filtr 433 MHz senzoru</h2>";
+  html += "<form method='POST' action='/save-filter'>";
+  html += "<label class='checkbox-label'>";
+  html += "<input type='checkbox' name='filter_enabled' value='1'" + String(filterEnabled ? " checked" : "") + ">";
+  html += "Povolit filtr modelu (přijímat POUZE Kedsum-TH)";
+  html += "</label>";
+  html += "<p class='note'>";
+  html += "<b>Zapnuto:</b> Ignoruje ostatní čidla (např. Acurite) a zobrazuje teplotu pouze ze senzoru Kedsum-TH.<br>";
+  html += "<b>Vypnuto:</b> Akceptuje a zobrazuje teplotu z jakéhokoliv zachyceného 433 MHz čidla v okolí.<br>";
+  html += "<em>(Změna se projeví okamžitě a uloží se do paměti NVS.)</em>";
+  html += "</p>";
+  html += "<button type='submit' class='btn'>Uložit nastavení filtru</button>";
+  html += "</form>";
+  html += "</div>";
+
+  html += "<div class='card'>";
   html += "<form method='POST' action='/reset' onsubmit='return confirm(\"Opravdu chcete vymazat WiFi nastavení a přepnout do AP módu?\");'>";
   html += "<p class='note'>Pokud chcete zařízení znovu uvést do výchozího stavu (vlastní přístupový bod):</p>";
   html += "<button type='submit' class='btn btn-danger'>Vymazat konfiguraci a spustit AP</button>";
@@ -887,6 +941,38 @@ void handleSaveWifi() {
   ESP.restart();
 }
 
+// Handler pro uložení nastavení filtru /save-filter
+void handleSaveFilter() {
+  filterEnabled = server.hasArg("filter_enabled");
+  saveFilterConfig();
+  Serial.printf("[Filter] Nastaveni zmeneno pres web: filterEnabled = %d\n", filterEnabled);
+  updateDisplay();
+
+  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Nastavení filtru uloženo</title>";
+  html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;text-align:center;padding:40px;}</style></head><body>";
+  html += "<h2 style='color:#7ee787;'>Nastavení filtru bylo uloženo do paměti!</h2>";
+  html += "<p>Filtr modelu je nyní: <b>" + String(filterEnabled ? "ZAPNUT (pouze Kedsum-TH)" : "VYPNUT (všechny zachycené modely)") + "</b></p>";
+  html += "<p style='margin-top:25px;'>";
+  html += "<a href='/setup' style='color:#58a6ff; margin:0 15px; font-weight:bold;'>&larr; Zpět do nastavení (/setup)</a>";
+  html += "<a href='/debug' style='color:#58a6ff; margin:0 15px; font-weight:bold;'>Přejít na monitor (/debug) &rarr;</a>";
+  html += "</p>";
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+// Rychlé přepnutí filtru /toggle-filter
+void handleToggleFilter() {
+  filterEnabled = !filterEnabled;
+  saveFilterConfig();
+  Serial.printf("[Filter] Prepnuto pres /toggle-filter: filterEnabled = %d\n", filterEnabled);
+  updateDisplay();
+
+  server.sendHeader("Location", "/debug", true);
+  server.send(302, "text/plain", "");
+}
+
 // Handler pro vymazání paměti a reset do AP módu /reset
 void handleResetWifi() {
   clearWifiConfig();
@@ -929,13 +1015,23 @@ void rtl_433_Callback(char* message) {
     temp = (tempF - 32.0f) * 5.0f / 9.0f;
   }
 
-  // Kontrola filtru: zajímá nás pouze Kedsum-TH
-  bool isTarget = model.equalsIgnoreCase(TARGET_MODEL);
-  if (isTarget && TARGET_ID >= 0 && id != TARGET_ID) {
-    isTarget = false;
-  }
-  if (isTarget && TARGET_CHANNEL >= 0 && channel != TARGET_CHANNEL) {
-    isTarget = false;
+  // Apply model/ID/channel filter when filterEnabled is true.
+  // When filterEnabled is false every packet that carries a temperature is accepted.
+  bool isTarget;
+  if (!filterEnabled) {
+    // Filter disabled: accept any model that has a temperature value
+    isTarget = !isnan(temp);
+    if (isTarget) {
+      Serial.printf("[RF FILTR VYPNUT] Akceptuji model '%s' (filtr je vypnut)\n", model.c_str());
+    }
+  } else {
+    isTarget = model.equalsIgnoreCase(TARGET_MODEL);
+    if (isTarget && TARGET_ID >= 0 && id != TARGET_ID) {
+      isTarget = false;
+    }
+    if (isTarget && TARGET_CHANNEL >= 0 && channel != TARGET_CHANNEL) {
+      isTarget = false;
+    }
   }
 
   // Zaznamenat do debug logu (včetně stavu akceptace)
@@ -943,7 +1039,11 @@ void rtl_433_Callback(char* message) {
 
   // Pokud paket NENÍ z Kedsum-TH, ignorujeme jej a nepřepisujeme teplotu!
   if (!isTarget) {
-    Serial.printf("[RF IGNOROVANO]: Model '%s' neodpovida '%s'\n", model.c_str(), TARGET_MODEL);
+    if (filterEnabled) {
+      Serial.printf("[RF IGNOROVANO]: Model '%s' neodpovida '%s'\n", model.c_str(), TARGET_MODEL);
+    } else {
+      Serial.printf("[RF IGNOROVANO]: Model '%s' nema teplotu (filtr vypnut)\n", model.c_str());
+    }
     return;
   }
 
@@ -997,8 +1097,10 @@ void setup() {
     updateDisplay();
   }
 
-  // 2. Načtení WiFi konfigurace z paměti NVS (Preferences)
+  // 2. Load WiFi and filter configuration from NVS (Preferences)
   loadWifiConfig();
+  loadFilterConfig();
+  Serial.printf("[Filter] Filtr modelu je: %s\n", filterEnabled ? "ZAPNUT (pouze Kedsum-TH)" : "VYPNUT (vsechny modely s teplotou)");
   WiFi.onEvent(WiFiEvent);
 
   if (wifiConfig.ssid.length() == 0) {
@@ -1023,6 +1125,8 @@ void setup() {
   server.on("/tx", HTTP_GET, handleRepeat);
   server.on("/setup", HTTP_GET, handleSetupPage);
   server.on("/save", HTTP_POST, handleSaveWifi);
+  server.on("/save-filter", HTTP_POST, handleSaveFilter);
+  server.on("/toggle-filter", HTTP_GET, handleToggleFilter);
   server.on("/reset", HTTP_POST, handleResetWifi);
 
   // Captive Portal pro mobilní zařízení v AP režimu

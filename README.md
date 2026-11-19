@@ -130,7 +130,10 @@ curl http://192.168.1.200/raw
 ```
 
 ### 4. Interactive Debug Dashboard (`GET /debug`)
-Open `http://192.168.1.200/debug` in any web browser to view the real-time dark-mode table of all incoming packets with visual acceptance tags.
+Open `http://192.168.1.200/debug` in any web browser to view the real-time dark-mode table of all incoming packets with visual acceptance tags and one-click filter toggling.
+
+### 5. WiFi & Filter Configuration (`GET /setup`)
+Open `http://192.168.1.200/setup` to configure WiFi SSID/password, DHCP vs Static IP, and toggle the 433 MHz sensor filter (accept Kedsum-TH only vs any sensor). Settings are stored in non-volatile flash storage (NVS / Preferences).
 
 ---
 

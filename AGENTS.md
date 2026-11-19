@@ -82,12 +82,14 @@ The web server runs on port 80:
 |---|---|---|---|
 | `GET /` | GET | Plain temperature float string (e.g. `21.4\n`) or NaN (`503 NaN\n`). In AP mode, shows setup page. | `text/plain` |
 | `GET /temp` | GET | Identical to `/` in STA mode. | `text/plain` |
-| `GET /setup` | GET | Interactive WiFi & IP configuration interface. | `text/html` |
+| `GET /setup` | GET | Interactive WiFi & IP configuration and RF sensor filter interface. | `text/html` |
 | `POST /save` | POST | Form action to save WiFi & IP settings to NVS and reboot. | `text/html` |
+| `POST /save-filter` | POST | Form action to enable/disable Kedsum-TH sensor model filter (persists in NVS namespace `weather-flt`). | `text/html` |
+| `GET /toggle-filter` | GET | Instant toggle of sensor model filter with redirect back to `/debug`. | `text/plain` (302) |
 | `POST /reset` | POST | Clears saved WiFi credentials and reboots into AP mode. | `text/html` |
-| `GET /debug` | GET | Real-time dark-mode HTML dashboard showing last 35 received packets, filter status, repeater metrics, and links. | `text/html` |
+| `GET /debug` | GET | Real-time dark-mode HTML dashboard showing last 35 received packets, filter status with toggle, repeater metrics, and links. | `text/html` |
 | `GET /raw` | GET | Plain-text raw packet log suitable for shell scripting / curl. | `text/plain` |
-| `GET /json` | GET | JSON payload containing current temperature, humidity, sensor ID, WiFi status, and repeater counters. | `application/json` |
+| `GET /json` | GET | JSON payload containing current temperature, humidity, sensor ID, WiFi status, filter state, and repeater counters. | `application/json` |
 | `GET /repeat` or `/tx` | GET | Triggers on-demand repeater transmission of latest Kedsum reading. | `text/plain` |
 
 ---
