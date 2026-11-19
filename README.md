@@ -18,9 +18,12 @@ A standalone wireless bridge running on the **LilyGO LoRa32 T3_V1.6.1 433MHz** t
 - **Minimalist HTTP Web Server**:
   - `GET /` (and default route): In regular WiFi STA mode returns **purely the temperature number** as plain text (e.g. `4.7\n`). In AP setup mode it automatically displays the WiFi configuration page.
   - `GET /setup`: Interactive web interface to configure WiFi credentials (SSID scan & select, password) and IP address mode (DHCP vs. static IP with IP, Gateway, Subnet mask, and DNS).
-  - `GET /debug`: Live HTML diagnostic dashboard (auto-refreshing every 4s) displaying captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), WiFi status link, repeater status, RSSI, and raw JSON payloads.
+  - `GET /filter`: Dedicated standalone web interface to manually configure and tune the 433 MHz RF sensor filter (target model, sensor ID, channel, enable/disable toggle) with a click-to-pick list of recently detected sensors.
+  - `GET /debug`: Live HTML diagnostic dashboard with embedded **Ruční nastavení filtru** (manual filter configuration form with datalist support for detected models, active editing detection to pause auto-refresh), table of captured packets with filter badges (`[AKCEPTOVANO]` vs `[IGNOROVANO]`), click-to-filter on any row, WiFi status link, repeater status, RSSI, and raw JSON payloads.
   - `GET /raw`: Clean plain text signal log suitable for `curl`.
-  - `GET /json`: Structured JSON response with temperature, humidity, sensor ID, channel, WiFi details, and repeater metrics.
+  - `GET /json`: Structured JSON response with temperature, humidity, sensor ID, channel, WiFi details, active filter state, and repeater metrics.
+  - `GET /set-filter`: Query-based filter configuration (`/set-filter?model=...&id=...&ch=...&enabled=...&redirect=...`).
+  - `GET /toggle-filter`: Instant toggle of sensor model filter.
   - `GET /repeat` (or `/tx`): On-demand HTTP trigger to immediately broadcast the latest reading to the second station.
 - **WiFi Captive Portal & Persistent NVS Storage**: If no WiFi credentials are stored in non-volatile storage (NVS via `Preferences`), the board automatically starts its own WiFi Access Point (`LilyGO-Weather-Setup` on `192.168.4.1`) with a captive portal redirecting any browser directly to `/setup`.
 - **Static IP & DHCP Support**: Fully configurable through the web interface with persistence across reboots.

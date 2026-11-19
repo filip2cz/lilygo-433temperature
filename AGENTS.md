@@ -83,12 +83,13 @@ The web server runs on port 80:
 | `GET /` | GET | Plain temperature float string (e.g. `21.4\n`) or NaN (`503 NaN\n`). In AP mode, shows setup page. | `text/plain` |
 | `GET /temp` | GET | Identical to `/` in STA mode. | `text/plain` |
 | `GET /setup` | GET | Interactive WiFi & IP configuration and RF sensor filter interface. | `text/html` |
+| `GET /filter` | GET | Dedicated manual RF sensor filter configuration page (model, ID, CH, enable/disable toggle) with list of discovered sensors. | `text/html` |
 | `POST /save` | POST | Form action to save WiFi & IP settings to NVS and reboot. | `text/html` |
-| `POST /save-filter` | POST | Form action to configure sensor model filter (persists in NVS namespace `weather-flt`). | `text/html` |
-| `GET /set-filter` | GET | Sets target model/ID/channel filter directly from query params (`?model=...&id=...&ch=...`), activates filter, and redirects to `/debug`. | `text/plain` (302) |
-| `GET /toggle-filter` | GET | Instant toggle of sensor model filter with redirect back to `/debug`. | `text/plain` (302) |
+| `POST /save-filter` | POST | Form action to configure sensor model filter (persists in NVS namespace `weather-flt`, supports redirect parameter). | `text/html` (302) |
+| `GET /set-filter` | GET/POST | Sets target model/ID/channel filter directly from query params (`?model=...&id=...&ch=...&enabled=...&redirect=...`), activates filter, and redirects. | `text/plain` (302) |
+| `GET /toggle-filter` | GET | Instant toggle of sensor model filter with redirect back to referrer or `/debug`. | `text/plain` (302) |
 | `POST /reset` | POST | Clears saved WiFi credentials and reboots into AP mode. | `text/html` |
-| `GET /debug` | GET | Real-time dark-mode HTML dashboard showing last 35 received packets, filter status with toggle, repeater metrics, and links. | `text/html` |
+| `GET /debug` | GET | Real-time dark-mode HTML dashboard showing last 35 received packets, embedded manual filter configuration form (with auto-refresh pause while typing), filter toggle, repeater metrics, and links. | `text/html` |
 | `GET /raw` | GET | Plain-text raw packet log suitable for shell scripting / curl. | `text/plain` |
 | `GET /json` | GET | JSON payload containing current temperature, humidity, sensor ID, WiFi status, filter state, and repeater counters. | `application/json` |
 | `GET /repeat` or `/tx` | GET | Triggers on-demand repeater transmission of latest Kedsum reading. | `text/plain` |

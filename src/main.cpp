@@ -562,6 +562,7 @@ void WiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
 // Web server handlery
 // ==========================================
 void handleSetupPage();
+void handleFilterPage();
 
 // Hlavní stránka: ČISTĚ JEN TEPLOTA (pouze číslo z čidla Kedsum-TH)
 void handleRoot() {
@@ -583,14 +584,24 @@ void handleRootOrSetup() {
 // Debug stránka s přehlednou tabulkou, stavem filtru a kopírovatelným výpisem signálů
 void handleDebug() {
   String html = "";
-  html.reserve(4096);
+  html.reserve(8192);
   html += "<!DOCTYPE html><html><head><meta charset='utf-8'>";
-  html += "<meta http-equiv='refresh' content='4'>";
+  html += "<noscript><meta http-equiv='refresh' content='4'></noscript>";
   html += "<title>LilyGO 433MHz - Zachycene signaly</title>";
   html += "<style>";
   html += "body { font-family: monospace, sans-serif; background: #161b22; color: #c9d1d9; padding: 20px; margin: 0; }";
   html += "h1 { color: #58a6ff; font-size: 20px; margin-bottom: 5px; }";
   html += ".filter-info { background: #1f242c; border-left: 4px solid #238636; padding: 10px 15px; margin: 15px 0; border-radius: 4px; font-size: 13px; line-height: 1.5; }";
+  html += ".filter-form-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px 16px; margin: 15px 0; }";
+  html += ".form-grid { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }";
+  html += ".form-item { flex: 1 1 130px; }";
+  html += ".form-item label { display: block; font-size: 11px; color: #7ee787; font-weight: bold; margin-bottom: 4px; }";
+  html += ".form-item input[type='text'], .form-item input[type='number'] { width: 100%; box-sizing: border-box; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 4px; font-size: 13px; font-family: inherit; }";
+  html += ".form-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }";
+  html += ".btn-save { background: #238636; color: white; border: none; border-radius: 4px; padding: 7px 14px; font-size: 12px; font-weight: bold; cursor: pointer; }";
+  html += ".btn-save:hover { background: #2ea043; }";
+  html += ".btn-toggle { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px; padding: 6px 12px; font-size: 12px; text-decoration: none; display: inline-block; }";
+  html += ".btn-toggle:hover { background: #30363d; color: white; }";
   html += ".nav { margin-bottom: 15px; font-size: 13px; }";
   html += ".nav a { color: #58a6ff; text-decoration: none; margin-right: 15px; }";
   html += "table { border-collapse: collapse; width: 100%; margin-top: 10px; background: #0d1117; }";
@@ -610,6 +621,8 @@ void handleDebug() {
   html += "</style></head><body>";
 
   html += "<h1>433 MHz Monitor - Zachycene signaly</h1>";
+
+  // Stavový přehled filtru
   html += "<div class='filter-info'>";
   html += "<b>Aktivni filtr:</b> ";
   if (filterEnabled) {
@@ -630,6 +643,65 @@ void handleDebug() {
     html += "DHCP (" + WiFi.localIP().toString() + ")";
   }
   html += " | <a href='/setup' style='color:#58a6ff;'>[Nastaveni WiFi / IP (/setup)]</a>";
+  html += "</div>";
+
+  // Box pro ruční nastavení filtru přímo v monitoru
+  html += "<div class='filter-form-box'>";
+  html += "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>";
+  html += "<b style='color:#58a6ff; font-size:14px;'>Rucni nastaveni filtru senzoru</b>";
+  html += "<span style='font-size:12px;'>";
+  if (filterEnabled) {
+    html += "<span class='badge-ok'>FILTR JE AKTIVNI</span>";
+  } else {
+    html += "<span class='badge-ign' style='background:#b08800; color:white;'>FILTR JE VYPNUT</span>";
+  }
+  html += "</span></div>";
+
+  html += "<form method='POST' action='/save-filter'>";
+  html += "<input type='hidden' name='redirect' value='/debug'>";
+  html += "<div class='form-grid'>";
+  html += "<div class='form-item' style='flex: 2 1 180px;'>";
+  html += "<label>Cilovy model senzoru:</label>";
+  html += "<input type='text' name='target_model' value='" + filterTargetModel + "' list='models-list' placeholder='napr. Kedsum-TH nebo Hideki-TS04'>";
+  html += "</div>";
+  html += "<div class='form-item'>";
+  html += "<label>ID senzoru (-1 = vse):</label>";
+  html += "<input type='number' name='target_id' value='" + String(filterTargetId) + "' placeholder='-1'>";
+  html += "</div>";
+  html += "<div class='form-item'>";
+  html += "<label>Kanal (-1 = vse):</label>";
+  html += "<input type='number' name='target_ch' value='" + String(filterTargetChannel) + "' placeholder='-1'>";
+  html += "</div>";
+  html += "<div class='form-item' style='flex: 0 0 auto; align-self: center; margin-top: 14px;'>";
+  html += "<label style='display:flex; align-items:center; cursor:pointer; color:#ffa657; margin:0;'>";
+  html += "<input type='checkbox' name='filter_enabled' value='1'" + String(filterEnabled ? " checked" : "") + "> Aktivovat filtr";
+  html += "</label>";
+  html += "</div>";
+  html += "</div>";
+
+  html += "<div class='form-actions'>";
+  html += "<button type='submit' class='btn-save'>Ulozit a aplikovat filtr</button>";
+  html += "<a href='/toggle-filter' class='btn-toggle'>" + String(filterEnabled ? "Vypnout filtr" : "Zapnout filtr") + "</a>";
+  html += "<a href='/set-filter?model=&id=-1&ch=-1&enabled=0&redirect=/debug' class='btn-toggle' style='color:#da3633;'>Zrusit filtr (vsechna cidla)</a>";
+  html += "<a href='/filter' class='btn-toggle' style='color:#58a6ff;'>Samostatna stranka filtru (/filter)</a>";
+  html += "<span style='color:#8b949e; font-size:11px; margin-left:auto;'>Pri psani do poli se automaticky refresh stranky pozastavi.</span>";
+  html += "</div>";
+  html += "</form>";
+
+  // Datalist pro modely
+  html += "<datalist id='models-list'>";
+  html += "<option value='Kedsum-TH'>";
+  html += "<option value='Hideki-TS04'>";
+  for (int i = 0; i < debugLogCount; i++) {
+    if (debugLog[i].model.length() > 0 &&
+        !debugLog[i].model.equalsIgnoreCase("Kedsum-TH") &&
+        !debugLog[i].model.equalsIgnoreCase("Hideki-TS04")) {
+      if (html.indexOf("'" + debugLog[i].model + "'") == -1) {
+        html += "<option value='" + debugLog[i].model + "'>";
+      }
+    }
+  }
+  html += "</datalist>";
   html += "</div>";
 
   // Banner opakovače signálu pro jinou meteostanici
@@ -659,6 +731,7 @@ void handleDebug() {
 
   html += "<div class='nav'>";
   html += "Auto-refresh: 4s | ";
+  html += "<a href='/filter'>Nastaveni filtru (/filter)</a> | ";
   html += "<a href='/raw'>Cisty text pro kopirovani (/raw)</a> | ";
   html += "<a href='/json'>JSON stav (/json)</a> | ";
   html += "<a href='/repeat'>Zopakovat nyni (/repeat)</a> | ";
@@ -747,6 +820,23 @@ void handleDebug() {
     html += "</pre>";
   }
 
+  // Script pro automatický refresh, který se pozastaví, pokud má uživatel focus v zadávacím poli
+  html += "<script>";
+  html += "var isTyping = false;";
+  html += "document.addEventListener('DOMContentLoaded', function() {";
+  html += "  var inputs = document.querySelectorAll('input, select, textarea');";
+  html += "  for (var i = 0; i < inputs.length; i++) {";
+  html += "    inputs[i].addEventListener('focus', function() { isTyping = true; });";
+  html += "    inputs[i].addEventListener('blur', function() { isTyping = false; });";
+  html += "  }";
+  html += "  setInterval(function() {";
+  html += "    if (!isTyping && (!document.activeElement || (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT'))) {";
+  html += "      window.location.reload();";
+  html += "    }";
+  html += "  }, 4000);";
+  html += "});";
+  html += "</script>";
+
   html += "</body></html>";
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -825,6 +915,116 @@ void handleRepeat() {
   } else {
     server.send(500, "text/plain; charset=utf-8", "Chyba: Opakovani signalu selhalo.\n");
   }
+}
+
+// Samostatná stránka pro ruční konfiguraci filtru 433 MHz čidla
+void handleFilterPage() {
+  String html = "";
+  html.reserve(4096);
+  html += "<!DOCTYPE html><html><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>LilyGO - Nastavení filtru senzoru</title>";
+  html += "<style>";
+  html += "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 550px; margin: 0 auto; }";
+  html += "h1 { color: #58a6ff; font-size: 20px; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-top: 0; }";
+  html += ".card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }";
+  html += "label { display: block; font-weight: bold; margin-top: 14px; margin-bottom: 5px; font-size: 13px; color: #7ee787; }";
+  html += "input[type='text'], input[type='number'] { width: 100%; box-sizing: border-box; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 10px; border-radius: 6px; font-size: 14px; }";
+  html += "input[type='checkbox'] { transform: scale(1.2); margin-right: 8px; }";
+  html += ".checkbox-label { display: flex; align-items: center; cursor: pointer; color: #ffa657; margin-top: 15px; }";
+  html += ".btn { background: #238636; color: white; border: none; border-radius: 6px; padding: 12px 20px; font-size: 15px; font-weight: bold; cursor: pointer; width: 100%; margin-top: 20px; text-align: center; text-decoration: none; display: inline-block; box-sizing: border-box; }";
+  html += ".btn:hover { background: #2ea043; }";
+  html += ".btn-sec { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; margin-top: 10px; font-size: 13px; padding: 10px 15px; text-decoration: none; display: inline-block; border-radius: 6px; text-align: center; width: 100%; box-sizing: border-box; }";
+  html += ".btn-sec:hover { background: #30363d; color: white; }";
+  html += ".badge-ok { background: #238636; color: white; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold; }";
+  html += ".badge-ign { background: #b08800; color: white; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold; }";
+  html += ".note { font-size: 12px; color: #8b949e; margin-top: 5px; line-height: 1.4; }";
+  html += ".nav { margin-top: 15px; font-size: 13px; text-align: center; }";
+  html += ".nav a { color: #58a6ff; text-decoration: none; margin: 0 10px; }";
+  html += ".sensor-pill { display: inline-block; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; margin: 4px; font-size: 12px; text-decoration: none; color: #58a6ff; }";
+  html += ".sensor-pill:hover { background: #30363d; border-color: #58a6ff; }";
+  html += "</style></head><body>";
+
+  html += "<h1>Ruční nastavení filtru 433 MHz</h1>";
+
+  html += "<div class='card'>";
+  html += "<p style='margin-top:0; font-size:14px;'><b>Aktuální stav:</b> ";
+  if (filterEnabled) {
+    html += "<span class='badge-ok'>FILTR ZAPNUT</span> &mdash; Cíl: <code>" + filterTargetModel + "</code>";
+    if (filterTargetId >= 0) html += " (ID: " + String(filterTargetId) + ")";
+    if (filterTargetChannel >= 0) html += " (CH: " + String(filterTargetChannel) + ")";
+  } else {
+    html += "<span class='badge-ign'>FILTR VYPNUT</span> &mdash; Přijímají se všechny modely. (Předvolba: <code>" + filterTargetModel + "</code>)";
+  }
+  html += "</p>";
+
+  html += "<form method='POST' action='/save-filter'>";
+  html += "<input type='hidden' name='redirect' value='/filter'>";
+
+  html += "<label class='checkbox-label'>";
+  html += "<input type='checkbox' name='filter_enabled' value='1'" + String(filterEnabled ? " checked" : "") + ">";
+  html += "Aktivovat filtr (zobrazovat teplotu pouze z vybraného senzoru)";
+  html += "</label>";
+
+  html += "<label>Cílový model senzoru:</label>";
+  html += "<input type='text' id='f_model' name='target_model' value='" + filterTargetModel + "' list='filter-models-list' placeholder='např. Kedsum-TH nebo Hideki-TS04'>";
+
+  html += "<label>Cílové ID senzoru (-1 = jakékoliv ID):</label>";
+  html += "<input type='number' id='f_id' name='target_id' value='" + String(filterTargetId) + "' placeholder='-1'>";
+
+  html += "<label>Cílový kanál (-1 = jakýkoliv kanál):</label>";
+  html += "<input type='number' id='f_ch' name='target_ch' value='" + String(filterTargetChannel) + "' placeholder='-1'>";
+
+  html += "<button type='submit' class='btn'>Uložit nastavení filtru</button>";
+  html += "<a href='/toggle-filter?redirect=/filter' class='btn-sec'>" + String(filterEnabled ? "Vypnout filtr" : "Zapnout filtr") + "</a>";
+  html += "<a href='/set-filter?model=&id=-1&ch=-1&enabled=0&redirect=/filter' class='btn-sec' style='color:#da3633;'>Vymazat filtr (akceptovat všechna čidla)</a>";
+  html += "</form>";
+
+  // Datalist pro modely
+  html += "<datalist id='filter-models-list'>";
+  html += "<option value='Kedsum-TH'>";
+  html += "<option value='Hideki-TS04'>";
+  for (int i = 0; i < debugLogCount; i++) {
+    if (debugLog[i].model.length() > 0 &&
+        !debugLog[i].model.equalsIgnoreCase("Kedsum-TH") &&
+        !debugLog[i].model.equalsIgnoreCase("Hideki-TS04")) {
+      if (html.indexOf("'" + debugLog[i].model + "'") == -1) {
+        html += "<option value='" + debugLog[i].model + "'>";
+      }
+    }
+  }
+  html += "</datalist>";
+  html += "</div>";
+
+  // Sekce zachycených čidel pro rychlý výběr
+  if (debugLogCount > 0) {
+    html += "<div class='card'>";
+    html += "<h2 style='font-size:15px; margin-top:0; color:#58a6ff;'>Zachycené signály v historii (klikněte pro nastavení):</h2>";
+    html += "<div style='display:flex; flex-wrap:wrap;'>";
+    for (int i = 0; i < debugLogCount; i++) {
+      String filterUrl = "/set-filter?model=" + debugLog[i].model +
+                         "&id=" + String(debugLog[i].id) +
+                         "&ch=" + String(debugLog[i].channel) +
+                         "&redirect=/filter";
+      html += "<a href='" + filterUrl + "' class='sensor-pill'>";
+      html += "<b>" + debugLog[i].model + "</b>";
+      if (debugLog[i].id >= 0) html += " ID:" + String(debugLog[i].id);
+      if (debugLog[i].channel >= 0) html += " CH:" + String(debugLog[i].channel);
+      if (!isnan(debugLog[i].temperature)) html += " (" + String(debugLog[i].temperature, 1) + " &deg;C)";
+      html += "</a>";
+    }
+    html += "</div>";
+    html += "</div>";
+  }
+
+  html += "<div class='nav'>";
+  html += "<a href='/debug'>&larr; Monitor signálů (/debug)</a> | ";
+  html += "<a href='/setup'>Nastavení WiFi (/setup)</a> | ";
+  html += "<a href='/'>Hlavní stránka</a>";
+  html += "</div>";
+
+  html += "</body></html>";
+  server.send(200, "text/html; charset=utf-8", html);
 }
 
 // Stránka pro nastavení WiFi a IP adresy / DHCP
@@ -906,6 +1106,7 @@ void handleSetupPage() {
   html += "<div class='card'>";
   html += "<h2 style='font-size:16px; margin-top:0; color:#58a6ff;'>Filtr 433 MHz senzoru</h2>";
   html += "<form method='POST' action='/save-filter'>";
+  html += "<input type='hidden' name='redirect' value='/setup'>";
   html += "<label class='checkbox-label'>";
   html += "<input type='checkbox' name='filter_enabled' value='1'" + String(filterEnabled ? " checked" : "") + ">";
   html += "Povolit filtr konkrétního senzoru/modelu";
@@ -913,7 +1114,7 @@ void handleSetupPage() {
   html += "<p class='note'>";
   html += "<b>Zapnuto:</b> Ignoruje ostatní čidla a zobrazuje teplotu pouze z vybraného signálu.<br>";
   html += "<b>Vypnuto:</b> Akceptuje a zobrazuje teplotu z jakéhokoliv zachyceného 433 MHz čidla v okolí.<br>";
-  html += "<em>(Filtr můžete nastavit také jedním kliknutím přímo v <a href='/debug' style='color:#58a6ff;'>Debug monitoru</a> na libovolný řádek historie.)</em>";
+  html += "<em>(Filtr můžete nastavit také jedním kliknutím přímo v <a href='/debug' style='color:#58a6ff;'>Debug monitoru</a> nebo na stránce <a href='/filter' style='color:#58a6ff;'>Ruční nastavení filtru</a>.)</em>";
   html += "</p>";
   html += "<label>Cílový model:</label>";
   html += "<input type='text' name='target_model' value='" + filterTargetModel + "' placeholder='Kedsum-TH'>";
@@ -934,6 +1135,7 @@ void handleSetupPage() {
 
   html += "<div class='nav'>";
   html += "<a href='/'>Hlavní stránka</a> | ";
+  html += "<a href='/filter'>Nastavení filtru (/filter)</a> | ";
   html += "<a href='/debug'>Debug monitoring</a>";
   html += "</div>";
 
@@ -989,61 +1191,72 @@ void handleSaveWifi() {
 
 // Handler pro uložení nastavení filtru /save-filter
 void handleSaveFilter() {
-  filterEnabled = server.hasArg("filter_enabled");
-  if (server.hasArg("target_model") && server.arg("target_model").length() > 0) {
+  filterEnabled = server.hasArg("filter_enabled") || (server.hasArg("enabled") && server.arg("enabled") != "0");
+  if (server.hasArg("target_model")) {
     filterTargetModel = server.arg("target_model");
+    filterTargetModel.trim();
+  } else if (server.hasArg("model")) {
+    filterTargetModel = server.arg("model");
+    filterTargetModel.trim();
   }
   if (server.hasArg("target_id")) {
     filterTargetId = server.arg("target_id").toInt();
+  } else if (server.hasArg("id")) {
+    filterTargetId = server.arg("id").toInt();
   }
   if (server.hasArg("target_ch")) {
     filterTargetChannel = server.arg("target_ch").toInt();
+  } else if (server.hasArg("ch")) {
+    filterTargetChannel = server.arg("ch").toInt();
+  } else if (server.hasArg("channel")) {
+    filterTargetChannel = server.arg("channel").toInt();
   }
   saveFilterConfig();
   Serial.printf("[Filter] Nastaveni zmeneno pres web: enabled=%d, model='%s', ID=%d, CH=%d\n",
                 filterEnabled, filterTargetModel.c_str(), filterTargetId, filterTargetChannel);
   updateDisplay();
 
-  String html = "<!DOCTYPE html><html><head><meta charset='utf-8'>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-  html += "<title>Nastavení filtru uloženo</title>";
-  html += "<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;text-align:center;padding:40px;}</style></head><body>";
-  html += "<h2 style='color:#7ee787;'>Nastavení filtru bylo uloženo do paměti!</h2>";
-  html += "<p>Filtr modelu je nyní: <b>" + String(filterEnabled ? ("ZAPNUT (Model: " + filterTargetModel + ")") : "VYPNUT (všechny modely)") + "</b></p>";
-  html += "<p style='margin-top:25px;'>";
-  html += "<a href='/setup' style='color:#58a6ff; margin:0 15px; font-weight:bold;'>&larr; Zpět do nastavení (/setup)</a>";
-  html += "<a href='/debug' style='color:#58a6ff; margin:0 15px; font-weight:bold;'>Přejít na monitor (/debug) &rarr;</a>";
-  html += "</p>";
-  html += "</body></html>";
-  server.send(200, "text/html; charset=utf-8", html);
+  String redirectUrl = "/debug";
+  if (server.hasArg("redirect") && server.arg("redirect").length() > 0) {
+    redirectUrl = server.arg("redirect");
+  }
+  server.sendHeader("Location", redirectUrl, true);
+  server.send(302, "text/plain", "");
 }
 
-// Handler pro nastavení filtru kliknutím ze záznamu historie /set-filter?model=...&id=...&ch=...
+// Handler pro nastavení filtru z odkazu nebo query /set-filter?model=...&id=...&ch=...&enabled=...&redirect=...
 void handleSetFilter() {
-  if (server.hasArg("model") && server.arg("model").length() > 0) {
+  if (server.hasArg("model")) {
     filterTargetModel = server.arg("model");
+    filterTargetModel.trim();
   }
   if (server.hasArg("id")) {
     filterTargetId = server.arg("id").toInt();
-  } else {
-    filterTargetId = -1;
   }
   if (server.hasArg("ch")) {
     filterTargetChannel = server.arg("ch").toInt();
   } else if (server.hasArg("channel")) {
     filterTargetChannel = server.arg("channel").toInt();
-  } else {
-    filterTargetChannel = -1;
   }
 
-  filterEnabled = true; // Kliknutí na záznam nastaví a zapne filtr na daný signál
+  if (server.hasArg("enabled")) {
+    String en = server.arg("enabled");
+    filterEnabled = (en == "1" || en == "true" || en == "on");
+  } else {
+    filterEnabled = true; // Výchozí chování: zapnout filtr
+  }
+
   saveFilterConfig();
 
-  Serial.printf("[Filter] Nastaven novy cil z historie: model='%s', ID=%d, CH=%d (filtr zapnut)\n",
-                filterTargetModel.c_str(), filterTargetId, filterTargetChannel);
+  Serial.printf("[Filter] Nastaven novy cil: model='%s', ID=%d, CH=%d (filtr enabled=%d)\n",
+                filterTargetModel.c_str(), filterTargetId, filterTargetChannel, filterEnabled);
   updateDisplay();
 
-  server.sendHeader("Location", "/debug", true);
+  String redirectUrl = "/debug";
+  if (server.hasArg("redirect") && server.arg("redirect").length() > 0) {
+    redirectUrl = server.arg("redirect");
+  }
+  server.sendHeader("Location", redirectUrl, true);
   server.send(302, "text/plain", "");
 }
 
@@ -1054,7 +1267,11 @@ void handleToggleFilter() {
   Serial.printf("[Filter] Prepnuto pres /toggle-filter: filterEnabled = %d\n", filterEnabled);
   updateDisplay();
 
-  server.sendHeader("Location", "/debug", true);
+  String redirectUrl = "/debug";
+  if (server.hasArg("redirect") && server.arg("redirect").length() > 0) {
+    redirectUrl = server.arg("redirect");
+  }
+  server.sendHeader("Location", redirectUrl, true);
   server.send(302, "text/plain", "");
 }
 
@@ -1212,9 +1429,12 @@ void setup() {
   server.on("/repeat", HTTP_GET, handleRepeat);
   server.on("/tx", HTTP_GET, handleRepeat);
   server.on("/setup", HTTP_GET, handleSetupPage);
+  server.on("/filter", HTTP_GET, handleFilterPage);
   server.on("/save", HTTP_POST, handleSaveWifi);
   server.on("/save-filter", HTTP_POST, handleSaveFilter);
+  server.on("/save-filter", HTTP_GET, handleSaveFilter);
   server.on("/set-filter", HTTP_GET, handleSetFilter);
+  server.on("/set-filter", HTTP_POST, handleSetFilter);
   server.on("/toggle-filter", HTTP_GET, handleToggleFilter);
   server.on("/reset", HTTP_POST, handleResetWifi);
 
