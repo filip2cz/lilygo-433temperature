@@ -89,6 +89,8 @@ Upon entering, you have access to short helper commands:
 - **`monitor`** — Opens serial monitor at 115200 baud (`pio device monitor`)
 - **`flash`** — One-shot command: builds, uploads, and immediately opens the monitor!
 - **`runtests`** — Runs the complete automated test suite (`python3 tests/run_tests.py`)!
+- **`mock`** — Starts the standalone local web gateway simulator on `http://127.0.0.1:8080`!
+- **`simulate`** — Boots the compiled firmware binary in the open-source **Espressif QEMU ESP32 emulator**!
 
 ### 2. Single-line Commands from Terminal
 You can also run any command directly from your system terminal without entering the interactive shell:
@@ -97,14 +99,27 @@ nix-shell --run upload
 nix-shell --run monitor
 nix-shell --run flash
 nix-shell --run runtests
+nix-shell --run mock
+nix-shell --run simulate
 ```
 
-### 3. Automated Test Suite (`tests/`)
+### 3. Simulation & Emulation
+The project provides two independent simulation workflows:
+1. **Espressif QEMU ESP32 Hardware Emulator (`simulate`)**:
+   - Packaged declaratively in `shell.nix` with upstream auto-patching for NixOS.
+   - Merges bootloader, partitions, and application binaries into a 4MB SPI flash image and launches `qemu-system-xtensa -machine esp32`.
+   - Runs actual Xtensa compiled machine code, initializes bootloader, NVS, OLED display driver, and serial console.
+2. **Lightweight Web Mock Simulator (`mock` / `tests/mock_server.py`)**:
+   - Simulates all HTTP endpoints (`/`, `/temp`, `/json`, `/raw`, `/debug`, `/filter`, `/setup`, `/save-filter`, `/set-filter`, `/toggle-filter`, `/repeat`).
+   - Automatically spun up by `runtests` whenever physical hardware is not detected, enabling 100% test coverage offline.
+
+### 4. Automated Test Suite (`tests/`)
 The repository includes automated unit and integration tests under the [`tests/`](file:///home/filip/git/lilygo-433temperature/tests) directory:
 - **`tests/test_filter_logic.py`**: Unit tests for sensor matching (model, ID, channel, wildcard handling).
 - **`tests/test_hideki_repeater.py`**: Unit tests for Hideki / Cresta protocol encoding and checksums.
 - **`tests/test_rtl433_parser.py`**: Unit tests for rtl_433 JSON message decoding and log ring buffer.
-- **`tests/test_device_api.py`**: Live hardware integration tests verifying all HTTP endpoints (`/`, `/json`, `/raw`, `/debug`, `/filter`, `/setup`, `/save-filter`, `/set-filter`, `/toggle-filter`).
+- **`tests/test_device_api.py`**: Hardware & simulator integration tests verifying all HTTP endpoints (`/`, `/json`, `/raw`, `/debug`, `/filter`, `/setup`, `/save-filter`, `/set-filter`, `/toggle-filter`).
+- **`tests/mock_server.py`**: Standalone web simulator and auto-fallback mock.
 - **`tests/run_tests.py`**: Unified test discovery and execution runner.
 
 Run all tests:

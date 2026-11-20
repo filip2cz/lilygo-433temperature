@@ -108,13 +108,18 @@ The repository includes a declarative [shell.nix](file:///home/filip/git/lilygo-
   - `monitor` — Opens serial monitor at 115200 baud (`pio device monitor`).
   - `flash` — Builds, uploads, and immediately opens the monitor (`pio run -t upload && exec pio device monitor`).
   - `runtests` — Executes the complete automated test suite (`python3 tests/run_tests.py`).
+  - `mock` — Starts standalone web simulator on `http://127.0.0.1:8080`.
+  - `simulate` — Builds unified 4MB flash image and executes firmware in Espressif QEMU ESP32 emulator.
 
-### Automated Test Suite (`tests/`):
-- `tests/test_filter_logic.py`: Unit tests for matching algorithm (wildcards, case-insensitivity, enabled/disabled state).
-- `tests/test_hideki_repeater.py`: Bitwise tests for Hideki / Cresta protocol encoding, packet byte layout, and checksum calculations.
-- `tests/test_rtl433_parser.py`: JSON packet parsing for various sensor models and ring log buffer capping.
-- `tests/test_device_api.py`: Hardware integration tests exercising live HTTP endpoints against `BOARD_URL` (default `http://192.168.1.50`).
-- `tests/run_tests.py`: Python unittest discovery runner.
+### Simulation and Automated Testing:
+- **Espressif QEMU ESP32**: Built via `shell.nix` from official Espressif release with `autoPatchelfHook` on NixOS. Runs `qemu-system-xtensa -machine esp32` on unified flash binary. Note: Espressif QEMU emulates Xtensa LX6 CPU, timers, NVS, I2C, SPI flash, and UART, but lacks 802.11 WiFi hardware registers.
+- **Web Mock Simulator (`tests/mock_server.py`)**: Standalone web mock reproducing all gateway routes and states. Used as automatic offline fallback by `runtests`.
+- **Unit & Integration Tests (`tests/`)**:
+  - `tests/test_filter_logic.py`: Unit tests for matching algorithm (wildcards, case-insensitivity, enabled/disabled state).
+  - `tests/test_hideki_repeater.py`: Bitwise tests for Hideki / Cresta protocol encoding, packet byte layout, and checksum calculations.
+  - `tests/test_rtl433_parser.py`: JSON packet parsing for various sensor models and ring log buffer capping.
+  - `tests/test_device_api.py`: Hardware & mock integration tests exercising all HTTP endpoints against `BOARD_URL`.
+  - `tests/run_tests.py`: Python unittest discovery runner with auto-fallback to mock simulator.
 
 ### PlatformIO Configuration (`platformio.ini`):
 - **Board**: `ttgo-lora32-v21`
